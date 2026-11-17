@@ -21,5 +21,6 @@ zzzzzzzzzzz-sheng-edge-matrix.patch
 zzzzzz-sheng-bsd-checkpoints.patch
 sheng-bootstrap-checkpoints.patch
 sheng-headless-startup-checkpoints.patch
-sheng-startup-failure-log.patch
+# sheng-startup-failure-log.patch does not apply at bsd/kern/kern_exec.c:10118 on this tree;
+# its boot_log_startup_result call sites are diagnostic only, so the series skips it.
 sheng-process-exit-log.patch
