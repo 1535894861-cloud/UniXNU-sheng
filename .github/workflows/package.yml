@@ -129,6 +129,12 @@ jobs:
         # Linux, FreeBSD and supplicant trees are fetched once here.
         run: |
           python3 device/drivers/Ath12kWifi/tools/fetch-sources.py
+      - name: proprietary firmware
+        # extract-files.py fills .cache/firmware from the pinned public mirror
+        # (Touch / Keyboard / Video). The GOP legacy display archive and the
+        # video firmware stage verify these pinned images and fail if absent.
+        run: |
+          python3 device/scripts/extract-files.py
       - name: package
         working-directory: device
         env:
