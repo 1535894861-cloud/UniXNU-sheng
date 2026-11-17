@@ -132,6 +132,23 @@ jobs:
           INIT_DATA: ${{ inputs.init_data }}
           OS_PROFILE: ${{ inputs.os }}
         run: |
+          python3 - <<'PY'
+          import pathlib, re
+          for patch in pathlib.Path('..').rglob('*.patch'):
+              try:
+                  txt = patch.read_text()
+              except Exception:
+                  continue
+              fixed = re.sub(
+                  r'(^diff --git [^\n]+\n)(--- /dev/null\n)',
+                  r'\1new file mode 100644\n\2',
+                  txt,
+                  flags=re.M,
+              )
+              if fixed != txt:
+                  patch.write_text(fixed)
+                  print(f'Fixed missing new file mode 100644 in {patch}')
+          PY
           args=(--os "$OS_PROFILE" --uefi ../uefi-sheng)
           if [ "$OS_PROFILE" = 27 ] && [ "$INIT_DATA" = true ]; then
             args+=(--init-data)
