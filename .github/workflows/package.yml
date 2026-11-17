@@ -124,11 +124,6 @@ jobs:
           if not path.is_file() and os.environ['INIT_DATA'] != 'true':
               raise SystemExit('No saved seed. Supply the ORIGINAL seed for an existing installation, or select init_data for a FIRST installation')
           PY
-      - name: wifi sources
-        # prepare-supplicant.py only runs fetch-sources.py --check, so the locked
-        # Linux, FreeBSD and supplicant trees are fetched once here.
-        run: |
-          python3 device/drivers/Ath12kWifi/tools/fetch-sources.py
       - name: package
         working-directory: device
         env:
