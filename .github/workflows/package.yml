@@ -27,6 +27,8 @@ on:
 permissions:
   contents: read
 
+# Queue mode: a later run on the same ref waits for the in-progress run instead of
+# cancelling it. To change inputs mid-flight, cancel the old run by hand, then dispatch.
 concurrency:
   group: package-${{ github.ref }}
   cancel-in-progress: false
@@ -135,6 +137,38 @@ jobs:
             args+=(--init-data)
           fi
           scripts/package.sh "${args[@]}"
+      - name: package diagnostics
+        if: failure()
+        run: |
+          # seed-data-grow.py captures every hdiutil/diskutil stream, so a failed grow
+          # leaves its reason only in the runner-local log. Print what the step cannot.
+          echo '::group::disk'
+          df -h
+          echo '::endgroup::'
+          echo '::group::disk images'
+          hdiutil info | tail -n 60
+          echo '::endgroup::'
+          echo '::group::largest trees'
+          du -x -s -m . UniXNU uefi-sheng 2>/dev/null | sort -n | tail -12
+          echo '::endgroup::'
+          echo '::group::log tails'
+          find . -maxdepth 10 -type f -name '*.log' -size -20M -print | while read -r row; do
+            echo "=== $row"
+            tail -n 120 "$row"
+          done
+          echo '::endgroup::'
+      - name: diagnostic logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: package-diagnostics
+          retention-days: 1
+          if-no-files-found: ignore
+          path: |
+            **/logs/runtime.log
+            **/logs/*.log
+            !**/*.tgz
+            !**/*.ipsw
       - uses: actions/cache/save@v4
         if: always() && inputs.os == '27' && steps.data-cache.outputs.cache-hit != 'true' && hashFiles('UniXNU/out/sheng/ipados-27.0.1-24A446/sheng_ipados27/runtime/data.dbr') != ''
         with:
