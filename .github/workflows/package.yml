@@ -200,6 +200,53 @@ jobs:
           bridge.write_text(patched)
           print('PASS: bridge patched for iOS read_pages (%d upgrade lines, %d restore lines)' % (len(upgrade), len(restore)))
           PY
+      - name: patch fileset reference relink loop
+        # The comparison kernel force-loads device archives whose bring-up hooks are
+        # undefined for the generic BCM2837 RELEASE config (arm64e link rejects them).
+        # Extend the existing stub mechanism: stub every symbol the relink still misses.
+        run: |
+          python3 - <<'PY'
+          import pathlib
+          script = pathlib.Path('UniXNU/scripts/build-fileset-release-reference.py')
+          text = script.read_text()
+          if 'RELEASE reference stub relink loop' in text:
+              raise SystemExit(0)
+          anchor = chr(10).join([
+              "    if result.returncode:",
+              "        raise SystemExit(result.returncode)",
+          ]) + chr(10)
+          assert text.count(anchor) == 1, 'RELEASE reference tail anchor count: %d' % text.count(anchor)
+          repl = chr(10).join([
+              "    # RELEASE reference stub relink loop: stub remaining undefined symbols, relink.",
+              "    attempts = 0",
+              "    while result.returncode and attempts < 3:",
+              "        attempts += 1",
+              "        log_text = (output / f'{mode}-build.log').read_text()",
+              "        referenced = sorted(set(re.findall(r'^  \"(_[A-Za-z0-9_.]+)\", referenced from:', log_text, re.M)))",
+              "        stubs_file = output / 'native-stubs.c'",
+              "        known = set(re.findall(r'^long ([A-Za-z0-9_]+);', stubs_file.read_text(), re.M)) if stubs_file.exists() else set()",
+              "        pending = [name for name in referenced if name[1:] not in known]",
+              "        if not pending:",
+              "            raise SystemExit(result.returncode)",
+              "        known.update(name[1:] for name in pending)",
+              "        stubs_file.write_text(''.join('long ' + name + ';' + chr(10) for name in sorted(known)))",
+              "        sdk_path = subprocess.check_output(['xcrun', '--sdk', 'iphoneos', '--show-sdk-path'], text=True).strip()",
+              "        subprocess.run(['xcrun', 'clang', '-arch', 'arm64e', '-mkernel', '-isysroot', sdk_path, '-c',",
+              "                        '-o', str(output / 'native-stubs.o'), str(stubs_file)], check=True)",
+              "        if not any(a.startswith('LD_KERNEL_ARCHIVES=') and 'native-stubs.o' in a for a in args):",
+              "            at = next(i for i, a in enumerate(args) if a.startswith('LD_KERNEL_ARCHIVES='))",
+              "            args[at] += f' -Wl,-force_load,{output}/native-stubs.o'",
+              "        with (output / f'{mode}-build.log').open('a') as log:",
+              "            result = subprocess.run(args, cwd=root, env=env, stdout=log, stderr=subprocess.STDOUT)",
+              "        print('RELEASE reference exit', result.returncode, 'log', output / f'{mode}-build.log', flush=True)",
+              "    if result.returncode:",
+              "        raise SystemExit(result.returncode)",
+          ]) + chr(10)
+          text = text.replace(anchor, repl, 1)
+          compile(text, str(script), 'exec')
+          script.write_text(text)
+          print('PASS: fileset reference relink loop installed (%d lines)' % len(repl.splitlines()))
+          PY
       - name: package
         working-directory: device
         env:
