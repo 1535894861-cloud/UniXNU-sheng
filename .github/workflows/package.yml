@@ -247,6 +247,66 @@ jobs:
           script.write_text(text)
           print('PASS: fileset reference relink loop installed (%d lines)' % len(repl.splitlines()))
           PY
+      - name: ios hook stubs for the 4k baseline link
+        # The ipados-27 profile force-loads device archives whose bring-up hooks have
+        # macOS providers only: the cs_native4k digest counters and two GPU/RamBlock
+        # helpers live in profiles/os/macos-27.3-*/patches only, and ShengEthernet /
+        # SoftwareAes are compiled under `if MACOS:` in build-gop-legacy-display-27.py.
+        # arm64e kernel links reject the remaining weak imports, so link one weak
+        # provider archive that is behaviourally "feature absent" on iOS: zero
+        # counters, no-op probes, the iPadOS 17 layout the probe itself falls back to,
+        # and ml_static_mfree_prepare reporting "cannot free" (the caller's -4 path).
+        run: |
+          python3 - <<'PY'
+          import os, re, pathlib, subprocess
+          out = pathlib.Path(os.environ['GITHUB_WORKSPACE']) / 'ios-hook-stubs'
+          out.mkdir(parents=True, exist_ok=True)
+          c_lines = [
+              '#define W __attribute__((weak, used))',
+              'typedef unsigned long long u64;',
+              'typedef unsigned int u32;',
+              'typedef unsigned long uptr;',
+              '',
+              'W u64 cs_native4k_digest_wall[2];',
+              'W u64 cs_native4k_digest_cpu[2];',
+              'W u64 cs_native4k_digest_bytes[2];',
+              'W u64 cs_native4k_record_ticks;',
+              '',
+              'W const u32 native_legacy_request_layout[6] = {17, 81, 792, 804, 816, 2624};',
+              '',
+              'W void sheng_ethernet_probe(void) {}',
+              'W void sheng_software_aes_probe(void) {}',
+              '',
+              'W void iokit_physical_descriptor_close_notify(void *md, void (*handler)(void *), void *context) {',
+              '    (void)md; (void)handler; (void)context;',
+              '}',
+              '',
+              'W _Bool ml_static_mfree_prepare(uptr vaddr, uptr size) {',
+              '    (void)vaddr; (void)size; return 0;',
+              '}',
+          ]
+          src = out / 'ios-hooks.c'
+          src.write_text(chr(10).join(c_lines) + chr(10))
+          sdk = subprocess.check_output(['xcrun', '--sdk', 'iphoneos', '--show-sdk-path'], text=True).strip()
+          obj, lib = out / 'ios-hooks.o', out / 'libIosHooks.a'
+          subprocess.run(['xcrun', 'clang', '-arch', 'arm64e', '-mkernel', '-isysroot', sdk, '-c',
+                          '-o', str(obj), str(src)], check=True)
+          if lib.exists():
+              lib.unlink()
+          subprocess.run(['xcrun', 'ar', 'rcs', str(lib), str(obj)], check=True)
+          wanted = ('cs_native4k_digest_wall', 'cs_native4k_digest_cpu', 'cs_native4k_digest_bytes',
+                    'cs_native4k_record_ticks', 'native_legacy_request_layout', 'sheng_ethernet_probe',
+                    'sheng_software_aes_probe', 'iokit_physical_descriptor_close_notify',
+                    'ml_static_mfree_prepare')
+          symbols = subprocess.check_output(['/opt/homebrew/opt/llvm/bin/llvm-nm', '-g', str(lib)],
+                                            text=True, errors='replace')
+          missing = [n for n in wanted if not re.search(r'\b_%s\b' % n, symbols)]
+          if missing:
+              raise SystemExit('stub symbols missing: %s' % ', '.join(missing))
+          with open(os.environ['GITHUB_ENV'], 'a') as env:
+              env.write('XNU_EXTRA_LD_ARCHIVES=-Wl,-force_load,%s\n' % lib)
+          print('PASS: %d ios hook stubs linked via XNU_EXTRA_LD_ARCHIVES' % len(wanted))
+          PY
       - name: package
         working-directory: device
         env:
