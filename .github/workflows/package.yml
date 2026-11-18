@@ -124,6 +124,18 @@ jobs:
           if not path.is_file() and os.environ['INIT_DATA'] != 'true':
               raise SystemExit('No saved seed. Supply the ORIGINAL seed for an existing installation, or select init_data for a FIRST installation')
           PY
+      - name: pin FreeBSD source to p6 tag
+        # releng/15.1 moves forward and drifts ahead of the locked commit; point
+        # the locked ref at the immutable release/15.1.0-p6 tag that resolves
+        # to commit 95719d8a895b..., keeping the FreeBSD source identity fixed.
+        run: |
+          python3 - <<'PY'
+          import pathlib
+          lock = pathlib.Path('device/drivers/Ath12kWifi/tools/source-lock.json')
+          text = lock.read_text()
+          assert text.count('releng/15.1') == 1, 'unexpected lock ref count'
+          lock.write_text(text.replace('releng/15.1', 'release/15.1.0-p6'))
+          PY
       - name: wifi sources
         # prepare-supplicant.py only runs fetch-sources.py --check, so the locked
         # Linux, FreeBSD and supplicant trees are fetched once here.
