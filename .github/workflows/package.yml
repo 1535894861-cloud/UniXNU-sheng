@@ -147,6 +147,35 @@ jobs:
         # video firmware stage verify these pinned images and fail if absent.
         run: |
           python3 device/scripts/extract-files.py
+      - name: patch bridge translator for iOS read_pages
+        # Upstream read_pages compiles only for linux/macos/windows; the ios27 bridge
+        # (target_os=ios) gets no definition and metal2vulkan-runtime fails E0425.
+        # Reuse the macOS Mach page-read path on iOS too. The bridge source-identity
+        # check runs before this translator-tree patch, so it is not rejected.
+        run: |
+          python3 - <<'PY'
+          import pathlib
+          bridge = pathlib.Path('UniXNU/scripts/build-adreno-metal-bridge.py')
+          lines = bridge.read_text().splitlines(keepends=True)
+          anchor = "if git_tree(['add', '-A']) != states[-1]:"
+          hits = [i for i, line in enumerate(lines) if line.rstrip('\n') == anchor]
+          assert len(hits) == 1, f'bridge anchor hits: {len(hits)}'
+          i = hits[0]
+          assert lines[i + 1].strip().startswith('raise SystemExit'), 'expected raise after anchor'
+          patch = [
+              "# sheng/iOS: reuse the macOS Mach read_pages path on iOS (target_os=ios);\n",
+              "# upstream only compiles read_pages for linux/macos/windows, leaving it undefined on iOS.\n",
+              "_rt = SOURCE / 'crates/metal2vulkan-runtime/src/copied.rs'\n",
+              "_rt_text = _rt.read_text()\n",
+              "_rt_old = '#[cfg(target_os = \"macos\")]\npub(crate) fn read_pages('\n",
+              "_rt_new = '#[cfg(any(target_os = \"macos\", target_os = \"ios\"))]\npub(crate) fn read_pages('\n",
+              "if _rt_text.count(_rt_old) != 1:\n",
+              "    raise SystemExit('read_pages macOS cfg anchor count != 1 in copied.rs')\n",
+              "_rt.write_text(_rt_text.replace(_rt_old, _rt_new))\n",
+          ]
+          lines[i + 2:i + 2] = patch
+          bridge.write_text(''.join(lines))
+          PY
       - name: package
         working-directory: device
         env:
