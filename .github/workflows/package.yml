@@ -247,65 +247,74 @@ jobs:
           script.write_text(text)
           print('PASS: fileset reference relink loop installed (%d lines)' % len(repl.splitlines()))
           PY
-      - name: ios hook stubs for the 4k baseline link
-        # The ipados-27 profile force-loads device archives whose bring-up hooks have
-        # macOS providers only: the cs_native4k digest counters and two GPU/RamBlock
-        # helpers live in profiles/os/macos-27.3-*/patches only, and ShengEthernet /
-        # SoftwareAes are compiled under `if MACOS:` in build-gop-legacy-display-27.py.
-        # arm64e kernel links reject the remaining weak imports, so link one weak
-        # provider archive that is behaviourally "feature absent" on iOS: zero
-        # counters, no-op probes, the iPadOS 17 layout the probe itself falls back to,
-        # and ml_static_mfree_prepare reporting "cannot free" (the caller's -4 path).
+      - name: patch 4k baseline to link ios hook stubs
+        # The extras block of build-xnu-4k-baseline.sh (device archives, probes and
+        # ${XNU_EXTRA_LD_ARCHIVES}) only runs when BOOTSTRAP = 0, but the failing link is
+        # the bootstrap pass of archive-20, so an environment-only archive never reached
+        # it. Append the weak/feature-absent provider archive inside the script instead,
+        # in every mode, so the bootstrap pass resolves the same nine hooks.
         run: |
           python3 - <<'PY'
-          import os, re, pathlib, subprocess
-          out = pathlib.Path(os.environ['GITHUB_WORKSPACE']) / 'ios-hook-stubs'
-          out.mkdir(parents=True, exist_ok=True)
-          c_lines = [
-              '#define W __attribute__((weak, used))',
+          import pathlib
+          script = pathlib.Path('UniXNU/scripts/build-xnu-4k-baseline.sh')
+          text = script.read_text()
+          if 'ios-hook-stubs' in text:
+              raise SystemExit(0)
+          anchor = chr(10).join([
+              '  EXTRA_MAKE_ARGS+=("LD_KERNEL_ARCHIVES=$KERNEL_EXTRA_ARCHIVES")',
+              '  EXTRA_MAKE_ARGS+=("XNU_EXTERNAL_KERNEL_ARCHIVES=$KERNEL_ARCHIVE_DEPENDENCIES")',
+              'fi',
+          ]) + chr(10)
+          assert text.count(anchor) == 1, 'extras block tail anchor count: %d' % text.count(anchor)
+          block = [
+              '# ipados-27 hook providers: only the macOS profile patches and macOS-only device',
+              '# files define them, and arm64e kernel links reject the weak imports that remain.',
+              '# Link one provider archive that is behaviourally "feature absent" on iPadOS; it is',
+              '# appended to the link in every mode, including the bootstrap pass.',
+              'IOS_STUB_DIR=$ROOT/build/ios-hook-stubs',
+              'mkdir -p "$IOS_STUB_DIR"',
+              'cat > "$IOS_STUB_DIR/ios-hooks.c" <<C_EOF',
+              '#define U __attribute__((used))',
               'typedef unsigned long long u64;',
               'typedef unsigned int u32;',
               'typedef unsigned long uptr;',
               '',
-              'W u64 cs_native4k_digest_wall[2];',
-              'W u64 cs_native4k_digest_cpu[2];',
-              'W u64 cs_native4k_digest_bytes[2];',
-              'W u64 cs_native4k_record_ticks;',
+              '/* BootLog.c diagnostic counters (macos cssha-digest-time.patch only). */',
+              'U u64 cs_native4k_digest_wall[2];',
+              'U u64 cs_native4k_digest_cpu[2];',
+              'U u64 cs_native4k_digest_bytes[2];',
+              'U u64 cs_native4k_record_ticks;',
               '',
-              'W const u32 native_legacy_request_layout[6] = {17, 81, 792, 804, 816, 2624};',
+              '/* LegacyDisplayProbe.cpp fallback layout for observation only. */',
+              'U const u32 native_legacy_request_layout[6] = {17, 81, 792, 804, 816, 2624};',
               '',
-              'W void sheng_ethernet_probe(void) {}',
-              'W void sheng_software_aes_probe(void) {}',
+              '/* macOS-only probes: absent on the iPadOS image. */',
+              'U void sheng_ethernet_probe(void) {}',
+              'U void sheng_software_aes_probe(void) {}',
               '',
-              'W void iokit_physical_descriptor_close_notify(void *md, void (*handler)(void *), void *context) {',
-              '    (void)md; (void)handler; (void)context;',
+              '/* macOS-only GPU pool close notification: the handler is simply not registered. */',
+              'U void iokit_physical_descriptor_close_notify(void *md, void (*handler)(void *), void *context) {',
+              '  (void)md; (void)handler; (void)context;',
               '}',
               '',
-              'W _Bool ml_static_mfree_prepare(uptr vaddr, uptr size) {',
-              '    (void)vaddr; (void)size; return 0;',
-              '}',
+              '/* macOS-only static range release: false is the caller documented fallback. */',
+              'U _Bool ml_static_mfree_prepare(uptr vaddr, uptr size) { (void)vaddr; (void)size; return 0; }',
+              'C_EOF',
+              'xcrun clang -arch arm64e -mkernel -isysroot "$(xcrun --sdk iphoneos --show-sdk-path)" \\',
+              '  -c -o "$IOS_STUB_DIR/ios-hooks.o" "$IOS_STUB_DIR/ios-hooks.c"',
+              'xcrun ar rcs "$IOS_STUB_DIR/libIosHooks.a" "$IOS_STUB_DIR/ios-hooks.o"',
+              'IOS_STUB_FORCE="-Wl,-force_load,$IOS_STUB_DIR/libIosHooks.a"',
+              'IOS_STUB_SET=0',
+              'for IOS_STUB_I in "${!EXTRA_MAKE_ARGS[@]}"; do',
+              '  case "${EXTRA_MAKE_ARGS[$IOS_STUB_I]}" in',
+              '    LD_KERNEL_ARCHIVES=*) EXTRA_MAKE_ARGS[$IOS_STUB_I]="${EXTRA_MAKE_ARGS[$IOS_STUB_I]} $IOS_STUB_FORCE"; IOS_STUB_SET=1 ;;',
+              '  esac',
+              'done',
+              'if [ "$IOS_STUB_SET" = 0 ]; then EXTRA_MAKE_ARGS+=("LD_KERNEL_ARCHIVES=$IOS_STUB_FORCE"); fi',
           ]
-          src = out / 'ios-hooks.c'
-          src.write_text(chr(10).join(c_lines) + chr(10))
-          sdk = subprocess.check_output(['xcrun', '--sdk', 'iphoneos', '--show-sdk-path'], text=True).strip()
-          obj, lib = out / 'ios-hooks.o', out / 'libIosHooks.a'
-          subprocess.run(['xcrun', 'clang', '-arch', 'arm64e', '-mkernel', '-isysroot', sdk, '-c',
-                          '-o', str(obj), str(src)], check=True)
-          if lib.exists():
-              lib.unlink()
-          subprocess.run(['xcrun', 'ar', 'rcs', str(lib), str(obj)], check=True)
-          wanted = ('cs_native4k_digest_wall', 'cs_native4k_digest_cpu', 'cs_native4k_digest_bytes',
-                    'cs_native4k_record_ticks', 'native_legacy_request_layout', 'sheng_ethernet_probe',
-                    'sheng_software_aes_probe', 'iokit_physical_descriptor_close_notify',
-                    'ml_static_mfree_prepare')
-          symbols = subprocess.check_output(['/opt/homebrew/opt/llvm/bin/llvm-nm', '-g', str(lib)],
-                                            text=True, errors='replace')
-          missing = [n for n in wanted if not re.search(r'\b_%s\b' % n, symbols)]
-          if missing:
-              raise SystemExit('stub symbols missing: %s' % ', '.join(missing))
-          with open(os.environ['GITHUB_ENV'], 'a') as env:
-              env.write('XNU_EXTRA_LD_ARCHIVES=-Wl,-force_load,%s\n' % lib)
-          print('PASS: %d ios hook stubs linked via XNU_EXTRA_LD_ARCHIVES' % len(wanted))
+          text = text.replace(anchor, anchor + chr(10).join(block) + chr(10), 1)
+          script.write_text(text)
+          print('PASS: ios hook stubs appended to build-xnu-4k-baseline.sh (%d lines)' % len(block))
           PY
       - name: package
         working-directory: device
