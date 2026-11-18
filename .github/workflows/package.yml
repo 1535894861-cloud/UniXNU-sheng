@@ -251,8 +251,8 @@ jobs:
         # The extras block of build-xnu-4k-baseline.sh (device archives, probes and
         # ${XNU_EXTRA_LD_ARCHIVES}) only runs when BOOTSTRAP = 0, but the failing link is
         # the bootstrap pass of archive-20, so an environment-only archive never reached
-        # it. Append the weak/feature-absent provider archive inside the script instead,
-        # in every mode, so the bootstrap pass resolves the same nine hooks.
+        # it. Append the feature-absent provider archive inside the script instead, in
+        # every mode, so the bootstrap pass resolves the same hooks.
         run: |
           python3 - <<'PY'
           import pathlib
@@ -283,7 +283,12 @@ jobs:
               'U u64 cs_native4k_digest_wall[2];',
               'U u64 cs_native4k_digest_cpu[2];',
               'U u64 cs_native4k_digest_bytes[2];',
+              'U u64 cs_native4k_chunk_ticks;',
               'U u64 cs_native4k_record_ticks;',
+              '',
+              '/* osfmk/arm64/cpu.c installs it only from the macOS-only sheng-platform-sleep.patch;',
+              ' * ArmCpu::start guards every use with a NULL test, so no platform sleep hook is right. */',
+              'U void (*arm64_platform_sleep_hook)(int boot_cpu) = 0;',
               '',
               '/* LegacyDisplayProbe.cpp fallback layout for observation only. */',
               'U const u32 native_legacy_request_layout[6] = {17, 81, 792, 804, 816, 2624};',
