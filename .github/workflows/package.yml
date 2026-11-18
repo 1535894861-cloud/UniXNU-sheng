@@ -321,6 +321,29 @@ jobs:
           script.write_text(text)
           print('PASS: ios hook stubs appended to build-xnu-4k-baseline.sh (%d lines)' % len(block))
           PY
+      - name: compile the wifi stack for size
+        # The 24A446 collection leaves the native kernel text only a few tens of KiB. The
+        # porting record for this board measured a 32 KiB overshoot with the WiFi stack at -O2
+        # and a fit once every board object used -Os. Ath12kWifi is the largest board part,
+        # so compile it for size on the iOS target.
+        run: |
+          python3 - <<'PY'
+          import pathlib
+
+          marker = "'-target', TRIPLE, '-mkernel', '-O2'"
+          replaced = "'-target', TRIPLE, '-mkernel', '-Os'"
+          for candidate in pathlib.Path('.').rglob('build-ath12k-wifi.py'):
+              source = candidate.read_text()
+              if replaced in source:
+                  print('wifi flags already size-first:', candidate)
+                  continue
+              count = source.count(marker)
+              if count != 1:
+                  print('skip %s: wifi flag anchor count %d' % (candidate, count))
+                  continue
+              candidate.write_text(source.replace(marker, replaced, 1))
+              print('wifi stack compiled for size:', candidate)
+          PY
       - name: report xnuprelink layout room
         # The prelink layout refuses to place the native kernel code when its __TEXT_EXEC/__KLD
         # reservation runs past the collection __DATA start. Print the numbers that decide it
