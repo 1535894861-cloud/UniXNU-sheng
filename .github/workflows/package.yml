@@ -150,56 +150,56 @@ jobs:
       - name: patch bridge translator for iOS read_pages
         # Upstream read_pages compiles only for linux/macos/windows; the ios27 bridge
         # (target_os=ios) gets no definition and metal2vulkan-runtime fails E0425.
-        # Upgrade #[cfg(target_os = "macos")] on read_pages right around cargo build
-        # and restore copied.rs immediately in a finally block so git_tree checks stay clean.
+        # Upgrade the copied.rs cfg to macos+ios right around the cargo build, then
+        # restore the file so later bridge invocations see the pristine source tree.
         run: |
           python3 - <<'PY'
           import pathlib
           bridge = pathlib.Path('UniXNU/scripts/build-adreno-metal-bridge.py')
-          text = bridge.read_text()
-          pre_anchor = "states = [git_tree(*[['apply', '--cached', str(patch)] for patch in PATCHES[:count]]) for count in range(len(PATCHES) + 1)]"
-          cargo_block = (
-              "with log.open('w') as stream:\n"
-              "    result = subprocess.run(cargo + ['build', '--release', '--manifest-path', manifest, '--target', triple,\n"
-              "                                     '--target-dir', target_dir], env=env, stdout=stream, stderr=subprocess.STDOUT, timeout=7200)"
-          )
-          assert pre_anchor in text, 'pre_anchor not found in build-adreno-metal-bridge.py'
-          assert cargo_block in text, 'cargo_block not found in build-adreno-metal-bridge.py'
-          pre_clean = (
-              "_rt_file = SOURCE / 'crates/metal2vulkan-runtime/src/copied.rs'\n"
-              "if _rt_file.is_file():\n"
-              "    _rt_text = _rt_file.read_text()\n"
-              "    _rt_ios = '#[cfg(any(target_os = \"macos\", target_os = \"ios\"))]' + chr(10) + 'pub(crate) fn read_pages('\n"
-              "    _rt_mac = '#[cfg(target_os = \"macos\")]' + chr(10) + 'pub(crate) fn read_pages('\n"
-              "    if _rt_ios in _rt_text:\n"
-              "        _rt_file.write_text(_rt_text.replace(_rt_ios, _rt_mac, 1))\n"
-          )
-          wrapped_cargo = (
-              "_rt_file = SOURCE / 'crates/metal2vulkan-runtime/src/copied.rs'\n"
-              "_rt_orig = _rt_file.read_text()\n"
-              "_rt_lines = _rt_orig.splitlines()\n"
-              "_rt_hit = None\n"
-              "for _n, _line in enumerate(_rt_lines):\n"
-              "    if _line.strip() == '#[cfg(target_os = \"macos\")]' and _n + 1 < len(_rt_lines) and 'read_pages' in _rt_lines[_n + 1]:\n"
-              "        _rt_hit = _n\n"
-              "        break\n"
-              "if _rt_hit is None and '#[cfg(any(target_os = \"macos\", target_os = \"ios\"))]' not in _rt_orig:\n"
-              "    raise SystemExit('read_pages macOS cfg anchor not found in copied.rs')\n"
-              "if _rt_hit is not None:\n"
-              "    _rt_lines[_rt_hit] = '#[cfg(any(target_os = \"macos\", target_os = \"ios\"))]'\n"
-              "    _rt_file.write_text(chr(10).join(_rt_lines) + chr(10))\n"
-              "try:\n"
-              "    with log.open('w') as stream:\n"
-              "        result = subprocess.run(cargo + ['build', '--release', '--manifest-path', manifest, '--target', triple,\n"
-              "                                         '--target-dir', target_dir], env=env, stdout=stream, stderr=subprocess.STDOUT, timeout=7200)\n"
-              "finally:\n"
-              "    _rt_file.write_text(_rt_orig)"
-          )
-          patched = text.replace(pre_anchor, pre_clean + pre_anchor, 1).replace(cargo_block, wrapped_cargo, 1)
+          lines = bridge.read_text().splitlines()
+          # locate the cargo build under `with log.open('w') as stream:`
+          ci = None
+          for i, ln in enumerate(lines):
+              if ln.strip() == "with log.open('w') as stream:" and i + 1 < len(lines) and 'subprocess.run(cargo' in lines[i + 1]:
+                  ci = i
+                  break
+          assert ci is not None, 'cargo build block not found in build-adreno-metal-bridge.py'
+          # locate the returncode guard right after it
+          fi = None
+          for j in range(ci, min(ci + 8, len(lines))):
+              if lines[j].strip() == 'if result.returncode:':
+                  fi = j
+                  break
+          assert fi is not None and lines[fi + 1].strip().startswith('raise SystemExit'), 'returncode guard not found'
+          upgrade = [
+              "# sheng/iOS: upstream read_pages compiles only for linux/macos/windows, so the",
+              "# ios27 bridge (target_os=ios) has no definition and metal2vulkan-runtime fails E0425.",
+              "# Reuse the macOS Mach page-read path on iOS for this cargo build, then restore the file.",
+              "_rt_file = SOURCE / 'crates/metal2vulkan-runtime/src/copied.rs'",
+              "_rt_orig = _rt_file.read_text()",
+              "_rt_lines = _rt_orig.splitlines()",
+              "_rt_hit = None",
+              "for _rt_n, _rt_line in enumerate(_rt_lines):",
+              "    if _rt_line.strip() == '#[cfg(target_os = \"macos\")]' and _rt_n + 1 < len(_rt_lines) and 'read_pages' in _rt_lines[_rt_n + 1]:",
+              "        _rt_hit = _rt_n",
+              "        break",
+              "if _rt_hit is not None:",
+              "    _rt_lines[_rt_hit] = '#[cfg(any(target_os = \"macos\", target_os = \"ios\"))]'",
+              "    _rt_file.write_text(chr(10).join(_rt_lines) + chr(10))",
+              "elif '#[cfg(any(target_os = \"macos\", target_os = \"ios\"))]' not in _rt_orig:",
+              "    raise SystemExit('read_pages macOS cfg anchor not found in copied.rs')",
+          ]
+          restore = [
+              "if _rt_hit is not None:",
+              "    _rt_file.write_text(_rt_orig)",
+          ]
+          lines[fi + 2:fi + 2] = restore
+          lines[ci:ci] = upgrade
+          patched = chr(10).join(lines) + chr(10)
           compile(patched, str(bridge), 'exec')
           bridge.write_text(patched)
-          print('Successfully patched build-adreno-metal-bridge.py with clean try/finally iOS read_pages wrapper')
-          PY   
+          print('PASS: bridge patched for iOS read_pages (%d upgrade lines, %d restore lines)' % (len(upgrade), len(restore)))
+          PY
       - name: package
         working-directory: device
         env:
