@@ -1,0 +1,492 @@
+name: package
+
+# scripts/package.sh of this repository on a macOS runner, with the UniXNU and uefi-sheng
+# checkouts beside it, the layout board.toml names. The platform seed comes from the
+# repository secret UNIXNU_UNIQUE_CHIP_ID and is baked into the images, so the run's
+# artifacts belong to one device alone: download them, then delete the run.
+
+on:
+  workflow_dispatch:
+    inputs:
+      os:
+        description: "OS profile of the images"
+        type: choice
+        options: ["27", "26", "17"]
+        default: "27"
+      init_data:
+        description: "Create a NEW installation seed if no saved seed exists (iPadOS 27 only)"
+        type: boolean
+        default: false
+      data_seed_url:
+        description: "Optional original data.dbr URL for an existing installation; otherwise use the saved cache"
+        type: string
+      data_seed_sha256:
+        description: "Required SHA-256 when data_seed_url is supplied"
+        type: string
+
+permissions:
+  contents: read
+
+# Queue mode: a later run on the same ref waits for the in-progress run instead of
+# cancelling it. To change inputs mid-flight, cancel the old run by hand, then dispatch.
+concurrency:
+  group: package-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  package:
+    runs-on: macos-26
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: device
+          submodules: recursive
+      - uses: actions/checkout@v4
+        with:
+          repository: UniXNU/UniXNU
+          ref: 630b85a307f19c8d8a4699d5bfc12f6796b874aa # archive providers, RELEASE reference and firmware toolchain fixes
+          path: UniXNU
+          submodules: recursive
+      - uses: actions/checkout@v4
+        with:
+          repository: UniXNU/uefi-sheng
+          path: uefi-sheng
+          submodules: recursive
+      - name: tools
+        run: |
+          brew install dtc llvm lld cmake mtools ninja glslang shaderc spirv-tools bison pkgconf rustup blacktop/tap/ipsw
+          {
+            echo "$HOME/.cargo/bin"
+            echo "/opt/homebrew/opt/llvm/bin"
+            echo "/opt/homebrew/opt/lld/bin"
+            echo "/opt/homebrew/opt/bison/bin"
+          } >> "$GITHUB_PATH"
+          rustup toolchain install 1.98.0 --profile minimal --component rust-src
+          # Fail fast, naming the tool, before forty minutes of build.
+          ok=1
+          for t in clang xcodebuild make git ninja cmake dtc fdtget fdtput aea compression_tool \
+                   mformat mcopy ipsw; do
+            command -v "$t" >/dev/null || { echo "missing tool: $t"; ok=0; }
+          done
+          for t in lld-link llvm-lib llvm-rc llvm-nm llvm-objcopy; do
+            [ -f "/opt/homebrew/opt/llvm/bin/$t" ] || [ -f "/opt/homebrew/opt/lld/bin/$t" ] || { echo "missing tool: $t"; ok=0; }
+          done
+          [ "$ok" = 1 ]
+      - name: platform seed
+        env:
+          seed: ${{ secrets.UNIXNU_UNIQUE_CHIP_ID }}
+        run: |
+          if ! [[ "$seed" =~ ^[0-9a-fA-F]{8}$ ]]; then
+            echo 'Set the repository secret UNIXNU_UNIQUE_CHIP_ID: the platform seed of the device, 8 hex digits.' >&2
+            exit 1
+          fi
+      - name: seed cache identity
+        id: seed-key
+        env:
+          SEED: ${{ secrets.UNIXNU_UNIQUE_CHIP_ID }}
+        run: |
+          python3 - <<'PY'
+          import hashlib, os
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as out:
+              out.write('key=data-seed-v1-' + hashlib.sha256(os.environ['SEED'].encode()).hexdigest()[:16] + '\n')
+          PY
+      - uses: actions/cache/restore@v4
+        id: data-cache
+        if: inputs.os == '27'
+        with:
+          path: |
+            UniXNU/out/sheng/ipados-27.0.1-24A446/sheng_ipados27/runtime/data.dbr
+            UniXNU/out/sheng/ipados-27.0.1-24A446/sheng_ipados27/runtime/inputs.json
+          key: ${{ steps.seed-key.outputs.key }}-${{ inputs.os }}
+      - name: prepare preserved Data seed
+        if: inputs.os == '27'
+        env:
+          INIT_DATA: ${{ inputs.init_data }}
+        run: |
+          python3 - <<'PY'
+          import hashlib, json, os, pathlib, urllib.request
+          inputs = json.loads(pathlib.Path(os.environ['GITHUB_EVENT_PATH']).read_text())['inputs']
+          path = pathlib.Path('UniXNU/out/sheng/ipados-27.0.1-24A446/sheng_ipados27/runtime/data.dbr')
+          url, digest = inputs.get('data_seed_url', ''), inputs.get('data_seed_sha256', '').lower()
+          if url:
+              print('::add-mask::' + url)
+              if not url.startswith('https://') or len(digest) != 64 or any(c not in '0123456789abcdef' for c in digest):
+                  raise SystemExit('A seed URL requires HTTPS and its SHA-256')
+              with urllib.request.urlopen(url, timeout=120) as source:
+                  data = source.read(64 * 1024 * 1024 + 1)
+              if len(data) > 64 * 1024 * 1024 or hashlib.sha256(data).hexdigest() != digest:
+                  raise SystemExit('Seed size or SHA-256 mismatch')
+              if path.exists() and path.read_bytes() != data:
+                  raise SystemExit('Saved seed differs; preserve and inspect it instead of replacing this installation')
+              path.parent.mkdir(parents=True, exist_ok=True)
+              path.write_bytes(data)
+          if not path.is_file() and os.environ['INIT_DATA'] != 'true':
+              raise SystemExit('No saved seed. Supply the ORIGINAL seed for an existing installation, or select init_data for a FIRST installation')
+          PY
+      - name: pin FreeBSD source to p6 tag
+        # releng/15.1 moves forward and drifts ahead of the locked commit; point
+        # the locked ref at the immutable release/15.1.0-p6 tag that resolves
+        # to commit 95719d8a895b..., keeping the FreeBSD source identity fixed.
+        run: |
+          python3 - <<'PY'
+          import pathlib
+          lock = pathlib.Path('device/drivers/Ath12kWifi/tools/source-lock.json')
+          text = lock.read_text()
+          assert text.count('releng/15.1') == 1, 'unexpected lock ref count'
+          lock.write_text(text.replace('releng/15.1', 'release/15.1.0-p6'))
+          PY
+      - name: wifi sources
+        # prepare-supplicant.py only runs fetch-sources.py --check, so the locked
+        # Linux, FreeBSD and supplicant trees are fetched once here.
+        run: |
+          python3 device/drivers/Ath12kWifi/tools/fetch-sources.py
+      - name: proprietary firmware
+        # extract-files.py fills .cache/firmware from the pinned public mirror
+        # (Touch / Keyboard / Video). The GOP legacy display archive and the
+        # video firmware stage verify these pinned images and fail if absent.
+        run: |
+          python3 device/scripts/extract-files.py
+      - name: patch bridge translator for iOS read_pages
+        # Upstream read_pages compiles only for linux/macos/windows; the ios27 bridge
+        # (target_os=ios) gets no definition and metal2vulkan-runtime fails E0425.
+        # Upgrade the copied.rs cfg to macos+ios right around the cargo build, then
+        # restore the file so later bridge invocations see the pristine source tree.
+        run: |
+          python3 - <<'PY'
+          import pathlib
+          bridge = pathlib.Path('UniXNU/scripts/build-adreno-metal-bridge.py')
+          lines = bridge.read_text().splitlines()
+          # locate the cargo build under `with log.open('w') as stream:`
+          ci = None
+          for i, ln in enumerate(lines):
+              if ln.strip() == "with log.open('w') as stream:" and i + 1 < len(lines) and 'subprocess.run(cargo' in lines[i + 1]:
+                  ci = i
+                  break
+          assert ci is not None, 'cargo build block not found in build-adreno-metal-bridge.py'
+          # locate the returncode guard right after it
+          fi = None
+          for j in range(ci, min(ci + 8, len(lines))):
+              if lines[j].strip() == 'if result.returncode:':
+                  fi = j
+                  break
+          assert fi is not None and lines[fi + 1].strip().startswith('raise SystemExit'), 'returncode guard not found'
+          upgrade = [
+              "# sheng/iOS: upstream read_pages compiles only for linux/macos/windows, so the",
+              "# ios27 bridge (target_os=ios) has no definition and metal2vulkan-runtime fails E0425.",
+              "# Reuse the macOS Mach page-read path on iOS for this cargo build, then restore the file.",
+              "_rt_file = SOURCE / 'crates/metal2vulkan-runtime/src/copied.rs'",
+              "_rt_orig = _rt_file.read_text()",
+              "_rt_lines = _rt_orig.splitlines()",
+              "_rt_hit = None",
+              "for _rt_n, _rt_line in enumerate(_rt_lines):",
+              "    if _rt_line.strip() == '#[cfg(target_os = \"macos\")]' and _rt_n + 1 < len(_rt_lines) and 'read_pages' in _rt_lines[_rt_n + 1]:",
+              "        _rt_hit = _rt_n",
+              "        break",
+              "if _rt_hit is not None:",
+              "    _rt_lines[_rt_hit] = '#[cfg(any(target_os = \"macos\", target_os = \"ios\"))]'",
+              "    _rt_file.write_text(chr(10).join(_rt_lines) + chr(10))",
+              "elif '#[cfg(any(target_os = \"macos\", target_os = \"ios\"))]' not in _rt_orig:",
+              "    raise SystemExit('read_pages macOS cfg anchor not found in copied.rs')",
+          ]
+          restore = [
+              "if _rt_hit is not None:",
+              "    _rt_file.write_text(_rt_orig)",
+          ]
+          lines[fi + 2:fi + 2] = restore
+          lines[ci:ci] = upgrade
+          patched = chr(10).join(lines) + chr(10)
+          compile(patched, str(bridge), 'exec')
+          bridge.write_text(patched)
+          print('PASS: bridge patched for iOS read_pages (%d upgrade lines, %d restore lines)' % (len(upgrade), len(restore)))
+          PY
+      - name: patch fileset reference relink loop
+        # The comparison kernel force-loads device archives whose bring-up hooks are
+        # undefined for the generic BCM2837 RELEASE config (arm64e link rejects them).
+        # Extend the existing stub mechanism: stub every symbol the relink still misses.
+        run: |
+          python3 - <<'PY'
+          import pathlib
+          script = pathlib.Path('UniXNU/scripts/build-fileset-release-reference.py')
+          text = script.read_text()
+          if 'RELEASE reference stub relink loop' in text:
+              raise SystemExit(0)
+          anchor = chr(10).join([
+              "    if result.returncode:",
+              "        raise SystemExit(result.returncode)",
+          ]) + chr(10)
+          assert text.count(anchor) == 1, 'RELEASE reference tail anchor count: %d' % text.count(anchor)
+          repl = chr(10).join([
+              "    # RELEASE reference stub relink loop: stub remaining undefined symbols, relink.",
+              "    attempts = 0",
+              "    while result.returncode and attempts < 3:",
+              "        attempts += 1",
+              "        log_text = (output / f'{mode}-build.log').read_text()",
+              "        referenced = sorted(set(re.findall(r'^  \"(_[A-Za-z0-9_.]+)\", referenced from:', log_text, re.M)))",
+              "        stubs_file = output / 'native-stubs.c'",
+              "        known = set(re.findall(r'^long ([A-Za-z0-9_]+);', stubs_file.read_text(), re.M)) if stubs_file.exists() else set()",
+              "        pending = [name for name in referenced if name[1:] not in known]",
+              "        if not pending:",
+              "            raise SystemExit(result.returncode)",
+              "        known.update(name[1:] for name in pending)",
+              "        stubs_file.write_text(''.join('long ' + name + ';' + chr(10) for name in sorted(known)))",
+              "        sdk_path = subprocess.check_output(['xcrun', '--sdk', 'iphoneos', '--show-sdk-path'], text=True).strip()",
+              "        subprocess.run(['xcrun', 'clang', '-arch', 'arm64e', '-mkernel', '-isysroot', sdk_path, '-c',",
+              "                        '-o', str(output / 'native-stubs.o'), str(stubs_file)], check=True)",
+              "        if not any(a.startswith('LD_KERNEL_ARCHIVES=') and 'native-stubs.o' in a for a in args):",
+              "            at = next(i for i, a in enumerate(args) if a.startswith('LD_KERNEL_ARCHIVES='))",
+              "            args[at] += f' -Wl,-force_load,{output}/native-stubs.o'",
+              "        with (output / f'{mode}-build.log').open('a') as log:",
+              "            result = subprocess.run(args, cwd=root, env=env, stdout=log, stderr=subprocess.STDOUT)",
+              "        print('RELEASE reference exit', result.returncode, 'log', output / f'{mode}-build.log', flush=True)",
+              "    if result.returncode:",
+              "        raise SystemExit(result.returncode)",
+          ]) + chr(10)
+          text = text.replace(anchor, repl, 1)
+          compile(text, str(script), 'exec')
+          script.write_text(text)
+          print('PASS: fileset reference relink loop installed (%d lines)' % len(repl.splitlines()))
+          PY
+      - name: patch 4k baseline to link ios hook stubs
+        # The extras block of build-xnu-4k-baseline.sh (device archives, probes and
+        # ${XNU_EXTRA_LD_ARCHIVES}) only runs when BOOTSTRAP = 0, but the failing link is
+        # the bootstrap pass of archive-20, so an environment-only archive never reached
+        # it. Append the feature-absent provider archive inside the script instead, in
+        # every mode, so the bootstrap pass resolves the same hooks.
+        run: |
+          python3 - <<'PY'
+          import pathlib
+          script = pathlib.Path('UniXNU/scripts/build-xnu-4k-baseline.sh')
+          text = script.read_text()
+          if 'ios-hook-stubs' in text:
+              raise SystemExit(0)
+          anchor = chr(10).join([
+              '  EXTRA_MAKE_ARGS+=("LD_KERNEL_ARCHIVES=$KERNEL_EXTRA_ARCHIVES")',
+              '  EXTRA_MAKE_ARGS+=("XNU_EXTERNAL_KERNEL_ARCHIVES=$KERNEL_ARCHIVE_DEPENDENCIES")',
+              'fi',
+          ]) + chr(10)
+          assert text.count(anchor) == 1, 'extras block tail anchor count: %d' % text.count(anchor)
+          block = [
+              '# ipados-27 hook providers: only the macOS profile patches and macOS-only device',
+              '# files define them, and arm64e kernel links reject the weak imports that remain.',
+              '# Link one provider archive that is behaviourally "feature absent" on iPadOS; it is',
+              '# appended to the link in every mode, including the bootstrap pass.',
+              'IOS_STUB_DIR=$ROOT/build/ios-hook-stubs',
+              'mkdir -p "$IOS_STUB_DIR"',
+              'cat > "$IOS_STUB_DIR/ios-hooks.c" <<C_EOF',
+              '#define U __attribute__((used))',
+              'typedef unsigned long long u64;',
+              'typedef unsigned int u32;',
+              'typedef unsigned long uptr;',
+              '',
+              '/* BootLog.c diagnostic counters (macos cssha-digest-time.patch only). */',
+              'U u64 cs_native4k_digest_wall[2] = {0, 0};',
+              'U u64 cs_native4k_digest_cpu[2] = {0, 0};',
+              'U u64 cs_native4k_digest_bytes[2] = {0, 0};',
+              'U u64 cs_native4k_chunk_ticks = 0;',
+              'U u64 cs_native4k_record_ticks = 0;',
+              '',
+              '/* osfmk/arm64/cpu.c installs it only from the macOS-only sheng-platform-sleep.patch;',
+              ' * ArmCpu::start guards every use with a NULL test, so no platform sleep hook is right. */',
+              'U void (*arm64_platform_sleep_hook)(int boot_cpu) = 0;',
+              '',
+              '/* LegacyDisplayProbe.cpp fallback layout for observation only. */',
+              'U const u32 native_legacy_request_layout[6] = {17, 81, 792, 804, 816, 2624};',
+              '',
+              '/* macOS-only probes: absent on the iPadOS image. */',
+              'U void sheng_ethernet_probe(void) {}',
+              'U void sheng_software_aes_probe(void) {}',
+              '',
+              '/* macOS-only GPU pool close notification: the handler is simply not registered. */',
+              'U void iokit_physical_descriptor_close_notify(void *md, void (*handler)(void *), void *context) {',
+              '  (void)md; (void)handler; (void)context;',
+              '}',
+              '',
+              '/* macOS-only static range release: false is the caller documented fallback. */',
+              'U _Bool ml_static_mfree_prepare(uptr vaddr, uptr size) { (void)vaddr; (void)size; return 0; }',
+              'C_EOF',
+              'xcrun clang -Os -arch arm64e -mkernel -isysroot "$(xcrun --sdk iphoneos --show-sdk-path)" \\',
+              '  -c -o "$IOS_STUB_DIR/ios-hooks.o" "$IOS_STUB_DIR/ios-hooks.c"',
+              'xcrun ar rcs "$IOS_STUB_DIR/libIosHooks.a" "$IOS_STUB_DIR/ios-hooks.o"',
+              'IOS_STUB_FORCE="-Wl,-force_load,$IOS_STUB_DIR/libIosHooks.a"',
+              'IOS_STUB_SET=0',
+              'for IOS_STUB_I in "${!EXTRA_MAKE_ARGS[@]}"; do',
+              '  case "${EXTRA_MAKE_ARGS[$IOS_STUB_I]}" in',
+              '    LD_KERNEL_ARCHIVES=*) EXTRA_MAKE_ARGS[$IOS_STUB_I]="${EXTRA_MAKE_ARGS[$IOS_STUB_I]} $IOS_STUB_FORCE"; IOS_STUB_SET=1 ;;',
+              '  esac',
+              'done',
+              'if [ "$IOS_STUB_SET" = 0 ]; then EXTRA_MAKE_ARGS+=("LD_KERNEL_ARCHIVES=$IOS_STUB_FORCE"); fi',
+          ]
+          text = text.replace(anchor, anchor + chr(10).join(block) + chr(10), 1)
+          script.write_text(text)
+          print('PASS: ios hook stubs appended to build-xnu-4k-baseline.sh (%d lines)' % len(block))
+          PY
+      - name: compile the wifi stack for size
+        # The 24A446 collection leaves the native kernel text only a few tens of KiB. The
+        # porting record for this board measured a 32 KiB overshoot with the WiFi stack at -O2
+        # and a fit once every board object used -Os. Ath12kWifi is the largest board part,
+        # so compile it for size on the iOS target.
+        run: |
+          python3 - <<'PY'
+          import pathlib
+
+          marker = "'-target', TRIPLE, '-mkernel', '-O2'"
+          replaced = "'-target', TRIPLE, '-mkernel', '-Os'"
+          for candidate in pathlib.Path('.').rglob('build-ath12k-wifi.py'):
+              source = candidate.read_text()
+              if replaced in source:
+                  print('wifi flags already size-first:', candidate)
+                  continue
+              count = source.count(marker)
+              if count != 1:
+                  print('skip %s: wifi flag anchor count %d' % (candidate, count))
+                  continue
+              candidate.write_text(source.replace(marker, replaced, 1))
+              print('wifi stack compiled for size:', candidate)
+          PY
+      - name: report xnuprelink layout room
+        # The prelink layout refuses to place the native kernel code when its __TEXT_EXEC/__KLD
+        # reservation runs past the collection __DATA start. Print the numbers that decide it
+        # before raising, so one run explains how many bytes the kernel is over and which
+        # native segment owns them.
+        run: |
+          python3 - <<'PY'
+          import pathlib
+
+          report = 'xnuprelink layout room report'
+          raise_line = chr(10).join([
+            "            raise ValueError('Native code would collide with collection data')",
+          ]) + chr(10)
+          print_block = chr(10).join([
+            "            data_va = self.roots['__DATA']['va']",
+            "            overflow = code_end - data_va",
+            "            print('layout: native code end %#x, collection __DATA %#x, overflow %#x bytes (%d pages)' % (code_end, data_va, overflow, -(-overflow // PAGE)))",
+            "            print('layout: cache base %#x, cursor %#x, __TEXT used %#x mapped %#x' % (self.cache.base, self.cursor, used, self.mapped['__TEXT']))",
+            "            for root_name in sorted(self.roots):",
+            "                root = self.roots[root_name]",
+            "                print('layout: root %-20s %#x+%#x' % (root_name, root['va'], root['size']))",
+            "            for segment in self.native.segments:",
+            "                placed = self.placements.get(segment['name'])",
+            "                end = placed + segment['size'] if placed is not None else 0",
+            "                print('layout: native %-16s va %#x size %#x filesize %#x placed %s end %s' % (segment['name'], segment['va'], segment['size'], segment['filesize'], hex(placed) if placed is not None else '-', hex(end) if placed is not None else '-'))",
+            "            for section in getattr(self.native, 'sections', []):",
+            "                if section.get('segment') in ('__TEXT_EXEC', '__KLD', '__LAST'):",
+            "                    print('layout: section %-16s %-20s va %#x size %#x' % (section['segment'], section.get('name', '?'), section['va'], section['size']))",
+            "            tail = sorted(self.occupied)[-12:]",
+            "            print('layout: last retained extents %s' % ', '.join('%#x-%#x' % pair for pair in tail))",
+            "            raise ValueError('Native code would collide with collection data: %#x bytes over' % overflow)",
+          ]) + chr(10)
+
+          for candidate in pathlib.Path('.').rglob('fileset_layout.py'):
+              source = candidate.read_text()
+              if report in source:
+                  print('layout report already present:', candidate)
+                  continue
+              count = source.count(raise_line)
+              if count != 1:
+                  print('skip %s: raise anchor count %d' % (candidate, count))
+                  continue
+              candidate.write_text(source.replace(raise_line, print_block, 1))
+              print('layout report installed:', candidate)
+          PY
+      - name: package
+        working-directory: device
+        env:
+          UNIXNU_UNIQUE_CHIP_ID: ${{ secrets.UNIXNU_UNIQUE_CHIP_ID }}
+          GITHUB_TOKEN: ${{ github.token }}
+          INIT_DATA: ${{ inputs.init_data }}
+          OS_PROFILE: ${{ inputs.os }}
+        run: |
+          python3 - <<'PY'
+          import pathlib, re
+          for patch in pathlib.Path('..').rglob('*.patch'):
+              try:
+                  txt = patch.read_text()
+              except Exception:
+                  continue
+              fixed = re.sub(
+                  r'(^diff --git [^\n]+\n)(--- /dev/null\n)',
+                  r'\1new file mode 100644\n\2',
+                  txt,
+                  flags=re.M,
+              )
+              if fixed != txt:
+                  patch.write_text(fixed)
+                  print(f'Fixed missing new file mode 100644 in {patch}')
+          PY
+          args=(--os "$OS_PROFILE" --uefi ../uefi-sheng)
+          if [ "$OS_PROFILE" = 27 ] && [ "$INIT_DATA" = true ]; then
+            args+=(--init-data)
+          fi
+          scripts/package.sh "${args[@]}"
+      - name: package diagnostics
+        if: failure()
+        run: |
+          # seed-data-grow.py captures every hdiutil/diskutil stream, so a failed grow
+          # leaves its reason only in the runner-local log. Print what the step cannot.
+          echo '::group::disk'
+          df -h
+          echo '::endgroup::'
+          echo '::group::disk images'
+          hdiutil info | tail -n 60
+          echo '::endgroup::'
+          echo '::group::largest trees'
+          du -x -s -m . UniXNU uefi-sheng 2>/dev/null | sort -n | tail -12
+          echo '::endgroup::'
+          echo '::group::log tails'
+          find . -maxdepth 10 -type f -name '*.log' -size -20M -print | while read -r row; do
+            echo "=== $row"
+            tail -n 120 "$row"
+          done
+          echo '::endgroup::'
+          python3 - <<'PY'
+          import pathlib
+          logs = sorted(pathlib.Path('.').rglob('*.log'), key=lambda p: p.stat().st_mtime, reverse=True)
+          for p in logs[:3]:
+              try:
+                  tail = '\n'.join(p.read_text(errors='replace').splitlines()[-25:])
+                  encoded = tail.replace('%', '%25').replace('\r', '%0D').replace('\n', '%0A')
+                  print(f'::error title=Log Tail ({p.name})::{encoded}')
+              except Exception:
+                  pass
+          PY
+          
+      - name: diagnostic logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: package-diagnostics
+          retention-days: 1
+          if-no-files-found: ignore
+          path: |
+            **/logs/runtime.log
+            **/logs/*.log
+            !**/*.tgz
+            !**/*.ipsw
+      - uses: actions/cache/save@v4
+        if: always() && inputs.os == '27' && steps.data-cache.outputs.cache-hit != 'true' && hashFiles('UniXNU/out/sheng/ipados-27.0.1-24A446/sheng_ipados27/runtime/data.dbr') != ''
+        with:
+          path: |
+            UniXNU/out/sheng/ipados-27.0.1-24A446/sheng_ipados27/runtime/data.dbr
+            UniXNU/out/sheng/ipados-27.0.1-24A446/sheng_ipados27/runtime/inputs.json
+          key: ${{ steps.seed-key.outputs.key }}-${{ inputs.os }}
+      - name: installation seed backup
+        if: always() && inputs.os == '27' && hashFiles('UniXNU/out/sheng/ipados-27.0.1-24A446/sheng_ipados27/runtime/data.dbr') != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: installation-seed-${{ inputs.os }}
+          retention-days: 1
+          path: |
+            UniXNU/out/sheng/*/*/runtime/data.dbr
+            UniXNU/out/sheng/*/*/runtime/inputs.json
+      - name: images
+        uses: actions/upload-artifact@v4
+        with:
+          name: images-${{ inputs.os }}
+          retention-days: 1
+          if-no-files-found: error
+          path: |
+            UniXNU/out/sheng/*/*/boot/boot.img
+            UniXNU/out/sheng/*/*/payload/payload.img
+            UniXNU/out/sheng/*/*/kernel/kernel.macho
+            UniXNU/out/sheng/*/*/package.manifest.json
