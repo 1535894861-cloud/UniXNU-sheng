@@ -280,11 +280,11 @@ jobs:
               'typedef unsigned long uptr;',
               '',
               '/* BootLog.c diagnostic counters (macos cssha-digest-time.patch only). */',
-              'U u64 cs_native4k_digest_wall[2];',
-              'U u64 cs_native4k_digest_cpu[2];',
-              'U u64 cs_native4k_digest_bytes[2];',
-              'U u64 cs_native4k_chunk_ticks;',
-              'U u64 cs_native4k_record_ticks;',
+              'U u64 cs_native4k_digest_wall[2] = {0, 0};',
+              'U u64 cs_native4k_digest_cpu[2] = {0, 0};',
+              'U u64 cs_native4k_digest_bytes[2] = {0, 0};',
+              'U u64 cs_native4k_chunk_ticks = 0;',
+              'U u64 cs_native4k_record_ticks = 0;',
               '',
               '/* osfmk/arm64/cpu.c installs it only from the macOS-only sheng-platform-sleep.patch;',
               ' * ArmCpu::start guards every use with a NULL test, so no platform sleep hook is right. */',
@@ -305,7 +305,7 @@ jobs:
               '/* macOS-only static range release: false is the caller documented fallback. */',
               'U _Bool ml_static_mfree_prepare(uptr vaddr, uptr size) { (void)vaddr; (void)size; return 0; }',
               'C_EOF',
-              'xcrun clang -arch arm64e -mkernel -isysroot "$(xcrun --sdk iphoneos --show-sdk-path)" \\',
+              'xcrun clang -Os -arch arm64e -mkernel -isysroot "$(xcrun --sdk iphoneos --show-sdk-path)" \\',
               '  -c -o "$IOS_STUB_DIR/ios-hooks.o" "$IOS_STUB_DIR/ios-hooks.c"',
               'xcrun ar rcs "$IOS_STUB_DIR/libIosHooks.a" "$IOS_STUB_DIR/ios-hooks.o"',
               'IOS_STUB_FORCE="-Wl,-force_load,$IOS_STUB_DIR/libIosHooks.a"',
@@ -320,6 +320,51 @@ jobs:
           text = text.replace(anchor, anchor + chr(10).join(block) + chr(10), 1)
           script.write_text(text)
           print('PASS: ios hook stubs appended to build-xnu-4k-baseline.sh (%d lines)' % len(block))
+          PY
+      - name: report xnuprelink layout room
+        # The prelink layout refuses to place the native kernel code when its __TEXT_EXEC/__KLD
+        # reservation runs past the collection __DATA start. Print the numbers that decide it
+        # before raising, so one run explains how many bytes the kernel is over and which
+        # native segment owns them.
+        run: |
+          python3 - <<'PY'
+          import pathlib
+
+          report = 'xnuprelink layout room report'
+          raise_line = chr(10).join([
+            "            raise ValueError('Native code would collide with collection data')",
+          ]) + chr(10)
+          print_block = chr(10).join([
+            "            data_va = self.roots['__DATA']['va']",
+            "            overflow = code_end - data_va",
+            "            print('layout: native code end %#x, collection __DATA %#x, overflow %#x bytes (%d pages)' % (code_end, data_va, overflow, -(-overflow // PAGE)))",
+            "            print('layout: cache base %#x, cursor %#x, __TEXT used %#x mapped %#x' % (self.cache.base, self.cursor, used, self.mapped['__TEXT']))",
+            "            for root_name in sorted(self.roots):",
+            "                root = self.roots[root_name]",
+            "                print('layout: root %-20s %#x+%#x' % (root_name, root['va'], root['size']))",
+            "            for segment in self.native.segments:",
+            "                placed = self.placements.get(segment['name'])",
+            "                end = placed + segment['size'] if placed is not None else 0",
+            "                print('layout: native %-16s va %#x size %#x filesize %#x placed %s end %s' % (segment['name'], segment['va'], segment['size'], segment['filesize'], hex(placed) if placed is not None else '-', hex(end) if placed is not None else '-'))",
+            "            for section in getattr(self.native, 'sections', []):",
+            "                if section.get('segment') in ('__TEXT_EXEC', '__KLD', '__LAST'):",
+            "                    print('layout: section %-16s %-20s va %#x size %#x' % (section['segment'], section.get('name', '?'), section['va'], section['size']))",
+            "            tail = sorted(self.occupied)[-12:]",
+            "            print('layout: last retained extents %s' % ', '.join('%#x-%#x' % pair for pair in tail))",
+            "            raise ValueError('Native code would collide with collection data: %#x bytes over' % overflow)",
+          ]) + chr(10)
+
+          for candidate in pathlib.Path('.').rglob('fileset_layout.py'):
+              source = candidate.read_text()
+              if report in source:
+                  print('layout report already present:', candidate)
+                  continue
+              count = source.count(raise_line)
+              if count != 1:
+                  print('skip %s: raise anchor count %d' % (candidate, count))
+                  continue
+              candidate.write_text(source.replace(raise_line, print_block, 1))
+              print('layout report installed:', candidate)
           PY
       - name: package
         working-directory: device
