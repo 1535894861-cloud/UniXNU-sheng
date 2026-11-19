@@ -434,6 +434,33 @@ jobs:
               candidate.write_text(source)
               print('mapping spans snapshotted:', candidate)
           PY
+      - name: bound the native data to the kernel address window
+        # Run 44450058832 moved the native __DATA into free mapped space and then was
+        # refused for __KLDDATA, which is allocated past the old __LINKEDIT root tail and
+        # can never sit inside a root span. Containment now only keeps every native
+        # segment inside the kernel address window: from the lowest mapping to the end of
+        # the space the layout itself has allocated by the time validate() runs.
+        run: |
+          python3 - <<'PY'
+          import pathlib
+
+          marker = 'self.cursor] + [e for b, e in self.spans]'
+          needle = "            if not any(b <= begin and end <= e for b, e in self.spans):" + chr(10)
+          replacement = ("            if not (min(b for b, e in self.spans) <= begin and " +
+                         "end <= max([self.cursor] + [e for b, e in self.spans])):" + chr(10))
+
+          for candidate in pathlib.Path('.').rglob('fileset_layout.py'):
+              source = candidate.read_text()
+              if marker in source:
+                  print('address window already bounded:', candidate)
+                  continue
+              if source.count(needle) != 1:
+                  print('skip %s: anchor count %d' % (candidate, source.count(needle)))
+                  continue
+              source = source.replace(needle, replacement, 1)
+              candidate.write_text(source)
+              print('address window bounded:', candidate)
+          PY
       - name: compile the kernel for size
         # Run 44420554210 measured the native kernel text 0x10000 bytes past the 24A446
         # collection __DATA even with every board object at -Os: native __TEXT_EXEC
