@@ -344,6 +344,68 @@ jobs:
               candidate.write_text(source.replace(marker, replaced, 1))
               print('wifi stack compiled for size:', candidate)
           PY
+      - name: place the native data after the native code
+        # Run 44431479010 fitted the native text (kernel -Os) but stopped at
+        # "Native __DATA overlaps a retained segment": native __DATA is 0x220000 bytes
+        # against the 0x1e8000 the collection leaves free before the retained kext data
+        # at 0xfffffff00ba1c000, and the collection's own kernel __DATA was exactly that
+        # size. The native data now goes into the free mapped span after the native code
+        # instead of the __DATA root address, and containment is checked against the
+        # merged mapping span so it may cross two touching roots.
+        run: |
+          python3 - <<'PY'
+          import pathlib
+
+          marker = 'def place_data(self):'
+          anchor = "        self.reserve('__DATA', self.roots['__DATA']['va'])" + chr(10)
+          needle = "            if not any(s['va'] <= begin and end <= s['va'] + s['size'] for s in self.roots.values()):" + chr(10)
+          replacement = "            if not any(b <= begin and end <= e for b, e in self.merged()):" + chr(10)
+          segment_line = "    def segment(self, name):" + chr(10)
+          methods = chr(10).join([
+              "    def merged(self):",
+              "        # Root mappings merged where they touch, so a native segment may span two.",
+              "        spans = sorted((s['va'], s['va'] + s['size']) for s in self.roots.values() if s['size'])",
+              "        merged = []",
+              "        for begin, end in spans:",
+              "            if merged and begin <= merged[-1][1]:",
+              "                merged[-1][1] = max(merged[-1][1], end)",
+              "            else:",
+              "                merged.append([begin, end])",
+              "        return merged",
+              "",
+              "    def place_data(self):",
+              "        # First mapped free run of the native __DATA size at or after the native code.",
+              "        size = self.segment('__DATA')['size']",
+              "        floor = align(self.end('__KLD'))",
+              "        for begin, end in self.merged():",
+              "            cursor = max(begin, floor)",
+              "            if cursor + size > end:",
+              "                continue",
+              "            hits = [(b, e) for b, e in self.occupied if b < cursor + size and cursor < e]",
+              "            if hits:",
+              "                continue",
+              "            print('layout: native __DATA at %#x (%#x bytes) after code ending %#x' % (cursor, size, self.end('__KLD')))",
+              "            return cursor",
+              "        raise ValueError('No mapped room for the native __DATA of %#x bytes after %#x' % (size, floor))",
+              "",
+              "    def segment(self, name):",
+          ]) + chr(10)
+
+          for candidate in pathlib.Path('.').rglob('fileset_layout.py'):
+              source = candidate.read_text()
+              if marker in source:
+                  print('layout already places the native data:', candidate)
+                  continue
+              counts = (source.count(anchor), source.count(needle), source.count(segment_line))
+              if counts != (1, 1, 1):
+                  print('skip %s: anchors %r' % (candidate, counts))
+                  continue
+              source = source.replace(anchor, "        self.reserve('__DATA', self.place_data())" + chr(10), 1)
+              source = source.replace(needle, replacement, 1)
+              source = source.replace(segment_line, methods, 1)
+              candidate.write_text(source)
+              print('layout places the native data:', candidate)
+          PY
       - name: compile the kernel for size
         # Run 44420554210 measured the native kernel text 0x10000 bytes past the 24A446
         # collection __DATA even with every board object at -Os: native __TEXT_EXEC
