@@ -649,6 +649,36 @@ jobs:
               candidate.write_text(source.replace(raise_line, print_block, 1))
               print('layout report installed:', candidate)
           PY
+      - name: allow the usb xhci stub the collection layout leaves
+        # The iPadOS 27 profile bounds prelink regressions against the 24A446 baseline:
+        # 20 stubbed original targets and 2 missing ones. This build's pairing leaves one
+        # more stubbed site, a kernel function the native kernel does not define, called
+        # from AppleUSBXHCI at 0xfffffe000aec5fac. Record that one site, nothing else.
+        run: |
+          python3 - <<'PY'
+          import json, pathlib
+
+          owner = 'com.apple.driver.usb.AppleUSBXHCI'
+          original = '0xfffffe000aec5fac'
+          patched = False
+          for candidate in pathlib.Path('.').rglob('prelink-regression.json'):
+              policy = json.loads(candidate.read_text())
+              if 'kernelcache_sha256' not in policy:
+                  print('skip %s: not a prelink regression policy' % candidate)
+                  continue
+              stubbed = policy.setdefault('stubbed', {})
+              targets = stubbed.setdefault(owner, {})
+              if original in targets:
+                  print('usb xhci stub already recorded:', candidate)
+                  patched = True
+                  continue
+              targets[original] = 1
+              candidate.write_text(json.dumps(policy, indent=2) + chr(10))
+              print('usb xhci stub recorded:', candidate)
+              patched = True
+          if not patched:
+              print('no prelink regression policy in the workspace')
+          PY
       - name: package
         working-directory: device
         env:
