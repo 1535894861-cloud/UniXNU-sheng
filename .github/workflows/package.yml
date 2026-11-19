@@ -344,6 +344,33 @@ jobs:
               candidate.write_text(source.replace(marker, replaced, 1))
               print('wifi stack compiled for size:', candidate)
           PY
+      - name: compile the kernel for size
+        # Run 44420554210 measured the native kernel text 0x10000 bytes past the 24A446
+        # collection __DATA even with every board object at -Os: native __TEXT_EXEC
+        # 0xfffffff00ac84000+0xbbc000 plus one __KLD page ends at 0xfffffff00b844000
+        # against __DATA at 0xfffffff00b834000. XNU appends CFLAGS_EXTRA last in CFLAGS
+        # (makedefs/MakeInc.def line 588), so appending -Os there compiles the kernel C
+        # sources for size and frees the four pages the layout needs.
+        run: |
+          python3 - <<'PY'
+          import pathlib
+
+          script = pathlib.Path('UniXNU/scripts/build-xnu-4k-baseline.sh')
+          if not script.exists():
+              raise SystemExit('missing %s' % script)
+          text = script.read_text()
+          added = 'EXTRA_CFLAGS="$EXTRA_CFLAGS -Os"'
+          if added in text:
+              print('kernel already compiled for size')
+              raise SystemExit(0)
+          anchor = 'EXTRA_CFLAGS="$EXTRA_CFLAGS -DXNU_BOOT_PROGRESS=$BOOT_PROGRESS"'
+          count = text.count(anchor)
+          if count != 1:
+              raise SystemExit('kernel flag anchor count %d' % count)
+          replacement = anchor + chr(10) + '# Size-first kernel text: the native __TEXT_EXEC has to fit below the collection __DATA.' + chr(10) + added
+          script.write_text(text.replace(anchor, replacement, 1))
+          print('kernel compiled for size:', script)
+          PY
       - name: report xnuprelink layout room
         # The prelink layout refuses to place the native kernel code when its __TEXT_EXEC/__KLD
         # reservation runs past the collection __DATA start. Print the numbers that decide it
