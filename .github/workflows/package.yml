@@ -485,6 +485,58 @@ jobs:
               candidate.write_text(source)
               print('window measured in kernel addresses:', candidate)
           PY
+      - name: grow the collection __DATA mapping to hold the kernel data
+        # Run 44468400517 placed the native __DATA at 0xfffffff00b740000 and then
+        # fileset_segmented.rebuild_linkedit() raised "Fixup is not within one root
+        # mapping": the site sits in the space the relocated __PRELINK_INFO freed,
+        # which belongs to no root. Chained fixups are grouped per root mapping, so
+        # the kernel __DATA has to live inside one mapping. That space is contiguous
+        # with the collection __DATA and holds no retained segment, so grow the
+        # collection __DATA mapping back to the end of the native code.
+        run: |
+          python3 - <<'PY'
+          import pathlib
+
+          needle = "        raise ValueError('No mapped room for the native __DATA of %#x bytes after %#x' % (size, floor))" + chr(10)
+          call = "        return self.grow_data_root(size, floor)" + chr(10)
+
+          method = chr(10).join([
+              "    def grow_data_root(self, size, floor):",
+              "        # The native __DATA must sit inside one collection mapping: chained",
+              "        # fixups are grouped per root mapping, and a site outside every root",
+              "        # mapping is rejected. The boot segment and prelink XML left a free",
+              "        # run right before the collection __DATA, holding no retained segment,",
+              "        # so grow that mapping back to the end of the native code.",
+              "        root = self.roots['__DATA']",
+              "        if floor >= root['va'] or floor + size > root['va'] + root['size']:",
+              "            raise ValueError('No mapped room for the native __DATA of %#x bytes after %#x' % (size, floor))",
+              "        grow = root['va'] - floor",
+              "        root['va'] = floor",
+              "        root['size'] = root['size'] + grow",
+              "        if root['filesize']:",
+              "            root['filesize'] = root['filesize'] + grow",
+              "        root['fileoff'] = root['va'] - self.cache.base",
+              "        print('layout: grew collection __DATA back %#x bytes, native __DATA at %#x (%#x bytes) inside %#x+%#x' % (grow, floor, size, root['va'], root['size']))",
+              "        return floor",
+              "",
+              "    def segment(self, name):",
+          ]) + chr(10)
+
+          segment = "    def segment(self, name):" + chr(10)
+
+          for candidate in pathlib.Path('.').rglob('fileset_layout.py'):
+              source = candidate.read_text()
+              if 'grow_data_root' in source:
+                  print('collection __DATA growth installed:', candidate)
+                  continue
+              if source.count(segment) != 1 or source.count(needle) != 1:
+                  print('skip %s: segment anchor %d raise anchor %d' % (candidate, source.count(segment), source.count(needle)))
+                  continue
+              source = source.replace(needle, call, 1)
+              source = source.replace(segment, method, 1)
+              candidate.write_text(source)
+              print('collection __DATA growth installed:', candidate)
+          PY
       - name: compile the kernel for size
         # Run 44420554210 measured the native kernel text 0x10000 bytes past the 24A446
         # collection __DATA even with every board object at -Os: native __TEXT_EXEC
