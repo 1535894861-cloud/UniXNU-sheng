@@ -461,6 +461,30 @@ jobs:
               candidate.write_text(source)
               print('address window bounded:', candidate)
           PY
+      - name: measure the address window in kernel addresses
+        # Run 44458878971 compared the __KLDDATA address against self.cursor, which is a
+        # file offset within the cache, not a kernel address, so the ceiling came out
+        # below every allocated segment. The ceiling is cache.base + cursor.
+        run: |
+          python3 - <<'PY'
+          import pathlib
+
+          marker = 'self.cache.base + self.cursor] + [e for b'
+          needle = "            if not (min(b for b, e in self.spans) <= begin and end <= max([self.cursor] + [e for b, e in self.spans])):" + chr(10)
+          replacement = "            if not (min(b for b, e in self.spans) <= begin and end <= max([self.cache.base + self.cursor] + [e for b, e in self.spans])):" + chr(10)
+
+          for candidate in pathlib.Path('.').rglob('fileset_layout.py'):
+              source = candidate.read_text()
+              if marker in source:
+                  print('window measured in kernel addresses:', candidate)
+                  continue
+              if source.count(needle) != 1:
+                  print('skip %s: anchor count %d' % (candidate, source.count(needle)))
+                  continue
+              source = source.replace(needle, replacement, 1)
+              candidate.write_text(source)
+              print('window measured in kernel addresses:', candidate)
+          PY
       - name: compile the kernel for size
         # Run 44420554210 measured the native kernel text 0x10000 bytes past the 24A446
         # collection __DATA even with every board object at -Os: native __TEXT_EXEC
