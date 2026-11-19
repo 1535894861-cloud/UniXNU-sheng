@@ -537,6 +537,38 @@ jobs:
               candidate.write_text(source)
               print('collection __DATA growth installed:', candidate)
           PY
+      - name: require the native data to sit inside one root mapping
+        # Run 44481125342 still printed "native __DATA at 0xfffffff00b740000 ... after code
+        # ending" and then failed with "Fixup is not within one root mapping". place_data()
+        # searched merged() spans, and __TEXT_EXEC, __PRELINK_INFO and __DATA touch each
+        # other there, so the merged run covered 0xb740000 even though no single root does.
+        # The free run must now lie inside one root before it is accepted; otherwise the
+        # layout grows the __DATA root (grow_data_root) and the data sits inside that one.
+        run: |
+          python3 - <<'PY'
+          import pathlib
+
+          needle = "            hits = [(b, e) for b, e in self.occupied if b < cursor + size and cursor < e]" + chr(10) + "            if hits:" + chr(10) + "                continue" + chr(10)
+          root_check = chr(10).join([
+              "            root = next((s for s in self.roots.values()",
+              "                        if s['size'] and s['va'] <= cursor and cursor + size <= s['va'] + s['size']), None)",
+              "            if root is None:",
+              "                continue",
+          ]) + chr(10)
+          marker = "if root is None:"
+
+          for candidate in pathlib.Path('.').rglob('fileset_layout.py'):
+              source = candidate.read_text()
+              if marker in source:
+                  print('single-root placement required:', candidate)
+                  continue
+              if source.count(needle) != 1:
+                  print('skip %s: anchor count %d' % (candidate, source.count(needle)))
+                  continue
+              source = source.replace(needle, needle + root_check, 1)
+              candidate.write_text(source)
+              print('single-root placement required:', candidate)
+          PY
       - name: compile the kernel for size
         # Run 44420554210 measured the native kernel text 0x10000 bytes past the 24A446
         # collection __DATA even with every board object at -Os: native __TEXT_EXEC
