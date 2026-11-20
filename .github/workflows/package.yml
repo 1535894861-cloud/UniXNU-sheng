@@ -701,6 +701,11 @@ jobs:
           INIT_DATA: ${{ inputs.init_data }}
           OS_PROFILE: ${{ inputs.os }}
         run: |
+          # Re-apply the display fix immediately before the release: the early step runs
+          # hundreds of lines and several checkouts before this build, so this one is the
+          # placement that actually reaches the compiler.
+          python3 ../scripts/apply-state-request.py
+          echo "display patch in source: $(grep -c -- '[legacy-pm]' ../UniXNU/drivers/GopFramebuffer/NativeLegacyDisplay.cpp || true)"
           python3 - <<'PY'
           import pathlib, re
           for patch in pathlib.Path('..').rglob('*.patch'):
@@ -723,6 +728,18 @@ jobs:
             args+=(--init-data)
           fi
           scripts/package.sh "${args[@]}"
+          echo "display patch after release: $(grep -c -- '[legacy-pm]' ../UniXNU/drivers/GopFramebuffer/NativeLegacyDisplay.cpp || true)"
+          OUT=$(ls -d ../UniXNU/out/sheng/*/sheng_ipados27 | head -1)
+          K=$(mktemp -d)/kernel.macho
+          mcopy -i "$OUT/payload/payload.img" "::/Payloads/KERNEL~1MAC" "$K" 2>/dev/null || \
+            mcopy -i "$OUT/payload/payload.img" "::/Payloads/kernel.macho" "$K"
+          DISPLAY=$(grep -a -o '[legacy-pm]' "$K" | wc -l | tr -d ' ')
+          WIFI=$(grep -a -o '[wifi-report]' "$K" | wc -l | tr -d ' ')
+          echo "kernel [legacy-pm]: $DISPLAY  kernel [wifi-report]: $WIFI"
+          # An image without the display fix is not worth flashing: fail here, with the
+          # counts printed, instead of handing over a dark-panel build.
+          test "$DISPLAY" -ge 1
+          test "$WIFI" -ge 1
       - name: package diagnostics
         if: failure()
         run: |
