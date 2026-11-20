@@ -73,6 +73,13 @@ jobs:
             [ -f "/opt/homebrew/opt/llvm/bin/$t" ] || [ -f "/opt/homebrew/opt/lld/bin/$t" ] || { echo "missing tool: $t"; ok=0; }
           done
           [ "$ok" = 1 ]
+      - name: display power state request
+        # The GOP scanout has no panel power switch, so the owned legacy display backend has to
+        # answer the original display state request (slot 375) itself: mirror the requested word
+        # into the powered word in both directions. Without it an off request never completes and
+        # every later power-button press re-issues "off": the panel stays dark until a reboot.
+        run: |
+          python3 device/scripts/apply-state-request.py
       - name: platform seed
         env:
           seed: ${{ secrets.UNIXNU_UNIQUE_CHIP_ID }}
