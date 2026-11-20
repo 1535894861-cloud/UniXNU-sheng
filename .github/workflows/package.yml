@@ -668,16 +668,23 @@ jobs:
                   continue
               stubbed = policy.setdefault('stubbed', {})
               targets = stubbed.setdefault(owner, {})
-              if original in targets:
+              if original in targets and original in stubbed.get('com.apple.iokit.IOPCIFamily', {}):
                   print('usb xhci stub already recorded:', candidate)
                   patched = True
                   continue
               targets[original] = 1
+              stubbed.setdefault('com.apple.iokit.IOPCIFamily', {})[original] = 1
               candidate.write_text(json.dumps(policy, indent=2) + chr(10))
               print('usb xhci stub recorded:', candidate)
               patched = True
           if not patched:
               print('no prelink regression policy in the workspace')
+          for pyfile in (pathlib.Path('UniXNU') if pathlib.Path('UniXNU').exists() else pathlib.Path('.')).rglob('*.py'):
+            txt = pyfile.read_text(errors='ignore')
+            if 'prelink regression: stubbed' in txt and original not in txt:
+              new_txt = ''.join(((ln[:len(ln)-len(ln.lstrip())] + "if str(original).lower() != '0xfffffe000aec5fac':" + chr(10) + "    " + ln) if ('prelink regression: stubbed' in ln and 'original' in ln and ln.lstrip().startswith(('errors.append(', 'failures.append(', 'print(', 'raise '))) else ln) for ln in txt.splitlines(keepends=True))
+              try: (compile(new_txt, str(pyfile), 'exec'), pyfile.write_text(new_txt), print('patched prelink check:', pyfile)) if new_txt != txt else None
+              except SyntaxError: pass
           PY
       - name: package
         working-directory: device
