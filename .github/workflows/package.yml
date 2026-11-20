@@ -704,8 +704,11 @@ jobs:
           # Re-apply the display fix immediately before the release: the early step runs
           # hundreds of lines and several checkouts before this build, so this one is the
           # placement that actually reaches the compiler.
-          python3 ../scripts/apply-state-request.py
-          echo "display patch in source: $(grep -c -- '[legacy-pm]' ../UniXNU/drivers/GopFramebuffer/NativeLegacyDisplay.cpp || true)"
+          ls -l scripts/apply-state-request.py ../UniXNU/drivers/GopFramebuffer/NativeLegacyDisplay.cpp
+          python3 scripts/apply-state-request.py
+          # Fail here, in seconds, rather than after the hour-long build.
+          grep -q -- '[legacy-pm]' ../UniXNU/drivers/GopFramebuffer/NativeLegacyDisplay.cpp
+          echo "display patch in source: $(grep -c -- '[legacy-pm]' ../UniXNU/drivers/GopFramebuffer/NativeLegacyDisplay.cpp)"
           python3 - <<'PY'
           import pathlib, re
           for patch in pathlib.Path('..').rglob('*.patch'):
