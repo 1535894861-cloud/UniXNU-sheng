@@ -2835,6 +2835,24 @@ static void writer(void *arg, wait_result_t result) {
     log_where_began = began; log_where = "cache loader capture";
     log_round_number = h.rounds + 1; log_round_began = began;
     if (&boot_cache_loader_log_capture) boot_cache_loader_log_capture(now);
+    // [wifi-report] The stage row lands only in the boot log window, which the host
+    // cannot read. The writer keeps running after userspace is up, so print the same
+    // stage through kprintf at ~40 s and ~90 s: one live syslog capture then shows it.
+    {
+      static uint32_t wifi_report_done;
+      uint32_t want = now >= 90 ? 3 : now >= 40 ? 1 : 0;
+      if (&native_wifi_stats && want > wifi_report_done) {
+        wifi_report_done = want;
+        printf("[wifi-report] t=%u st=%d v8=%x v0=%x gdsc=%x off=%x gpio=%06x ltssm=%x id=%08x lnk=%08x phy=%x pins=%06x pwr=%x pcs=%x dbg0=%x dbg1=%x ep=%08x ms=%u wlan=%08x perst=%08x clkreq=%08x rails=%x rsc=%08x tcs=%x/%x/%x/%x\n",
+            now, (int)native_wifi_stats[0], native_wifi_stats[1], native_wifi_stats[2],
+            native_wifi_stats[3], native_wifi_stats[4], native_wifi_stats[5], native_wifi_stats[6],
+            native_wifi_stats[7], native_wifi_stats[8], native_wifi_stats[9], native_wifi_stats[10],
+            native_wifi_stats[11], native_wifi_stats[12], native_wifi_stats[13], native_wifi_stats[14],
+            native_wifi_stats[15], native_wifi_stats[16], native_wifi_stats[17], native_wifi_stats[18],
+            native_wifi_stats[19], native_wifi_stats[20], native_wifi_stats[21], native_wifi_stats[22],
+            native_wifi_stats[23], native_wifi_stats[24], native_wifi_stats[25]);
+      }
+    }
     int ok = 1;
     if (boot_log_panicked) return;   // the panic flush owns the window from now on
     // Text slot, then the message buffer, then the header that makes both visible. The new kernel messages are taken into the stream
