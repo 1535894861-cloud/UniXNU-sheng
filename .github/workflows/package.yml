@@ -701,14 +701,18 @@ jobs:
           INIT_DATA: ${{ inputs.init_data }}
           OS_PROFILE: ${{ inputs.os }}
         run: |
-          # Re-apply the display fix immediately before the release: the early step runs
-          # hundreds of lines and several checkouts before this build, so this one is the
-          # placement that actually reaches the compiler.
-          ls -l scripts/apply-state-request.py ../UniXNU/drivers/GopFramebuffer/NativeLegacyDisplay.cpp
+          # There are two independent GopFramebuffer checkouts of the same submodule: the
+          # pinned one under UniXNU/ (which the early step patches, because it runs from the
+          # workspace root) and this device repository's own copy, which is the one the build
+          # actually compiles: build-gop-legacy-display-27.py lives here, so ROOT is this
+          # repository and sources[0] is drivers/GopFramebuffer/NativeLegacyDisplay.cpp.
+          # Patching only the pinned copy was why [legacy-pm] never reached the kernel.
           python3 scripts/apply-state-request.py
+          ls -l drivers/GopFramebuffer/NativeLegacyDisplay.cpp
           # Fail here, in seconds, rather than after the hour-long build.
-          grep -q -- '[legacy-pm]' ../UniXNU/drivers/GopFramebuffer/NativeLegacyDisplay.cpp
-          echo "display patch in source: $(grep -c -- '[legacy-pm]' ../UniXNU/drivers/GopFramebuffer/NativeLegacyDisplay.cpp)"
+          grep -q -- '[legacy-pm]' drivers/GopFramebuffer/NativeLegacyDisplay.cpp
+          echo "display patch in device source: $(grep -c -- '[legacy-pm]' drivers/GopFramebuffer/NativeLegacyDisplay.cpp || true) at line $(grep -n -- '[legacy-pm]' drivers/GopFramebuffer/NativeLegacyDisplay.cpp | head -1 | cut -d: -f1 || true)"
+          sha256sum drivers/GopFramebuffer/NativeLegacyDisplay.cpp
           python3 - <<'PY'
           import pathlib, re
           for patch in pathlib.Path('..').rglob('*.patch'):
@@ -731,7 +735,7 @@ jobs:
             args+=(--init-data)
           fi
           scripts/package.sh "${args[@]}"
-          echo "display patch after release: $(grep -c -- '[legacy-pm]' ../UniXNU/drivers/GopFramebuffer/NativeLegacyDisplay.cpp || true)"
+          echo "display patch after release: $(grep -c -- '[legacy-pm]' drivers/GopFramebuffer/NativeLegacyDisplay.cpp || true)"
           OUT=$(ls -d ../UniXNU/out/sheng/*/sheng_ipados27 | head -1)
           K=$(mktemp -d)/kernel.macho
           mcopy -i "$OUT/payload/payload.img" "::/Payloads/KERNEL~1MAC" "$K" 2>/dev/null || \
