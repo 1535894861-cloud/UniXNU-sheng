@@ -711,10 +711,9 @@ jobs:
           sha256sum ../UniXNU/drivers/GopFramebuffer/NativeLegacyDisplay.cpp
           # Fail here, in seconds, rather than after the hour-long build.
           grep -q -F -- '[legacy-pm]' ../UniXNU/drivers/GopFramebuffer/NativeLegacyDisplay.cpp
-          # Never link an archive that was built before this edit: drop the cached one so the
-          # build has to regenerate it from the patched source.
-          find .. -maxdepth 4 -name '*NativeLegacyDisplay*' -print 2>/dev/null | head -20
-          rm -rf ../UniXNU/build/native-legacy-display
+          # tree/drivers/<name> is a symlink to the module source (unixnu/tree.py assembles
+          # it with _link(module.path)), so the patched checkout is what the compiler reads;
+          # the counts printed after the release confirm it instead of assuming either way.
           python3 - <<'PY'
           import pathlib, re
           for patch in pathlib.Path('..').rglob('*.patch'):
@@ -737,23 +736,16 @@ jobs:
             args+=(--init-data)
           fi
           scripts/package.sh "${args[@]}"
-          echo "display patch after release: $(grep -c -F -- '[legacy-pm]' ../UniXNU/drivers/GopFramebuffer/NativeLegacyDisplay.cpp || true)"
-          # If the archive exists but carries no marker, the build linked something built
-          # before the edit; the count below is the difference between "never compiled" and
-          # "compiled but dropped by the relink".
-          A=../UniXNU/build/native-legacy-display/libNativeLegacyDisplay.late.a
-          if [ -f "$A" ]; then
-            echo "late.a size $(stat -c%s "$A") marker $(strings "$A" | grep -c -F legacy-pm || true)"
-          else
-            echo "late.a missing at $A"
-          fi
+          echo "digest after release: checkout=$(grep -c -F -- '[legacy-pm]' ../UniXNU/drivers/GopFramebuffer/NativeLegacyDisplay.cpp || true) tree=$(cat ../UniXNU/out/sheng/*/sheng_ipados27/tree/drivers/GopFramebuffer/NativeLegacyDisplay.cpp 2>/dev/null | grep -c -F legacy-pm || true)"
           OUT=$(ls -d ../UniXNU/out/sheng/*/sheng_ipados27 | head -1)
-          K=$(mktemp -d)/kernel.macho
-          mcopy -i "$OUT/payload/payload.img" "::/Payloads/KERNEL~1MAC" "$K" 2>/dev/null || \
-            mcopy -i "$OUT/payload/payload.img" "::/Payloads/kernel.macho" "$K"
-          DISPLAY=$(grep -a -o -F '[legacy-pm]' "$K" | wc -l | tr -d ' ')
-          WIFI=$(grep -a -o -F '[wifi-report]' "$K" | wc -l | tr -d ' ')
-          echo "kernel [legacy-pm]: $DISPLAY  kernel [wifi-report]: $WIFI"
+          # The payload is a plain FAT image, so the kernel image sits in it uncompressed:
+          # search the container instead of relying on mtools entry names, which mtools does
+          # not always resolve on this filesystem.
+          PI="$OUT/payload/payload.img"
+          ls -l "$PI"
+          DISPLAY=$(grep -a -c -F '[legacy-pm]' "$PI" || true)
+          WIFI=$(grep -a -c -F '[wifi-report]' "$PI" || true)
+          echo "payload [legacy-pm]: $DISPLAY  payload [wifi-report]: $WIFI"
           # An image without the display fix is not worth flashing: fail here, with the
           # counts printed, instead of handing over a dark-panel build.
           test "$DISPLAY" -ge 1
