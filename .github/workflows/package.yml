@@ -701,18 +701,20 @@ jobs:
           INIT_DATA: ${{ inputs.init_data }}
           OS_PROFILE: ${{ inputs.os }}
         run: |
-          # There are two independent GopFramebuffer checkouts of the same submodule: the
-          # pinned one under UniXNU/ (which the early step patches, because it runs from the
-          # workspace root) and this device repository's own copy, which is the one the build
-          # actually compiles: build-gop-legacy-display-27.py lives here, so ROOT is this
-          # repository and sources[0] is drivers/GopFramebuffer/NativeLegacyDisplay.cpp.
-          # Patching only the pinned copy was why [legacy-pm] never reached the kernel.
+          # The display source is the pinned UniXNU/GopFramebuffer submodule under UniXNU/:
+          # the device repository has no GopFramebuffer of its own (drivers/ holds only
+          # Ath12kWifi, QcaBluetooth, QcomDwc3, Sheng*), and build-arm-driver.py resolves
+          # "drivers/<component>/<file>.cpp" from the UniXNU root, so that checkout is the
+          # one that reaches the compiler.
           python3 scripts/apply-state-request.py
-          ls -l drivers/GopFramebuffer/NativeLegacyDisplay.cpp
+          grep -F -n -- '[legacy-pm]' ../UniXNU/drivers/GopFramebuffer/NativeLegacyDisplay.cpp | head -3
+          sha256sum ../UniXNU/drivers/GopFramebuffer/NativeLegacyDisplay.cpp
           # Fail here, in seconds, rather than after the hour-long build.
-          grep -q -- '[legacy-pm]' drivers/GopFramebuffer/NativeLegacyDisplay.cpp
-          echo "display patch in device source: $(grep -c -- '[legacy-pm]' drivers/GopFramebuffer/NativeLegacyDisplay.cpp || true) at line $(grep -n -- '[legacy-pm]' drivers/GopFramebuffer/NativeLegacyDisplay.cpp | head -1 | cut -d: -f1 || true)"
-          sha256sum drivers/GopFramebuffer/NativeLegacyDisplay.cpp
+          grep -q -F -- '[legacy-pm]' ../UniXNU/drivers/GopFramebuffer/NativeLegacyDisplay.cpp
+          # Never link an archive that was built before this edit: drop the cached one so the
+          # build has to regenerate it from the patched source.
+          find .. -maxdepth 4 -name '*NativeLegacyDisplay*' -print 2>/dev/null | head -20
+          rm -rf ../UniXNU/build/native-legacy-display
           python3 - <<'PY'
           import pathlib, re
           for patch in pathlib.Path('..').rglob('*.patch'):
@@ -735,13 +737,22 @@ jobs:
             args+=(--init-data)
           fi
           scripts/package.sh "${args[@]}"
-          echo "display patch after release: $(grep -c -- '[legacy-pm]' drivers/GopFramebuffer/NativeLegacyDisplay.cpp || true)"
+          echo "display patch after release: $(grep -c -F -- '[legacy-pm]' ../UniXNU/drivers/GopFramebuffer/NativeLegacyDisplay.cpp || true)"
+          # If the archive exists but carries no marker, the build linked something built
+          # before the edit; the count below is the difference between "never compiled" and
+          # "compiled but dropped by the relink".
+          A=../UniXNU/build/native-legacy-display/libNativeLegacyDisplay.late.a
+          if [ -f "$A" ]; then
+            echo "late.a size $(stat -c%s "$A") marker $(strings "$A" | grep -c -F legacy-pm || true)"
+          else
+            echo "late.a missing at $A"
+          fi
           OUT=$(ls -d ../UniXNU/out/sheng/*/sheng_ipados27 | head -1)
           K=$(mktemp -d)/kernel.macho
           mcopy -i "$OUT/payload/payload.img" "::/Payloads/KERNEL~1MAC" "$K" 2>/dev/null || \
             mcopy -i "$OUT/payload/payload.img" "::/Payloads/kernel.macho" "$K"
-          DISPLAY=$(grep -a -o '[legacy-pm]' "$K" | wc -l | tr -d ' ')
-          WIFI=$(grep -a -o '[wifi-report]' "$K" | wc -l | tr -d ' ')
+          DISPLAY=$(grep -a -o -F '[legacy-pm]' "$K" | wc -l | tr -d ' ')
+          WIFI=$(grep -a -o -F '[wifi-report]' "$K" | wc -l | tr -d ' ')
           echo "kernel [legacy-pm]: $DISPLAY  kernel [wifi-report]: $WIFI"
           # An image without the display fix is not worth flashing: fail here, with the
           # counts printed, instead of handing over a dark-panel build.
