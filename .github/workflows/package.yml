@@ -750,11 +750,6 @@ jobs:
           # counts printed, instead of handing over a dark-panel build.
           test "$DISPLAY" -ge 1
           test "$WIFI" -ge 1
-      - name: gpu addon
-        if: inputs.os == '27'
-        continue-on-error: true
-        run: |
-          bash device/scripts/pack27-gpu.sh
       - name: package diagnostics
         if: failure()
         run: |
@@ -836,5 +831,8 @@ jobs:
             UniXNU/out/sheng/*/*/payload/payload.img
             UniXNU/out/sheng/*/*/kernel/kernel.macho
             UniXNU/out/sheng/*/*/package.manifest.json
-            UniXNU/out/sheng/*/*/addon27g.bin
-            UniXNU/out/sheng/*/*/trust27g.bundle
+            UniXNU/out/sheng/*/*/wifi-addon.bin
+            UniXNU/out/sheng/*/*/gpuaddon.bin
+            UniXNU/out/sheng/*/*/owner-trust.bundle
+            UniXNU/out/sheng/*/*/wifi-owner-trust.bundle
+            UniXNU/out/sheng/*/*/generated.json
