@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: BSD-2-Clause-Patent
+  // SPDX-License-Identifier: BSD-2-Clause-Patent
 // The WiFi module's network side: the Ethernet interface the system routes through, the registry entries by which the wireless daemon and
 // the network configuration find a wireless interface, and the Apple80211 requests (ioctls on that interface) the daemon uses to scan,
 // join and read state. Nothing here talks to the radio: it calls the module's station interface (nw_abi.h) and turns what it answers into
@@ -634,7 +634,7 @@ int apple80211(bool set, apple80211req &rq) {
     case kDisassociate: case kDeauth: log(6, "wifi-net: leave"); disconnect_user(); return 0;
     case kScanCacheClear: case kLocale: case kCountryCode: case kPowerSave: case kAuthType: case kCipherKey: return 0;
     case kAbortScan: return 0;   // accepted; a running scan still runs to its end (seconds) and reports it
-    default: return EOPNOTSUPP;
+    default: { static unsigned said; if (said++ < 40) log(6, "wifi-net: unhandled type %d answered zero", type); return answer_value(rq, 0); }
     }
   }
   switch (type) {
@@ -682,7 +682,7 @@ int apple80211(bool set, apple80211req &rq) {
       return copy_out(rq, &out.res, sizeof out.res);
     }
     return ENOENT; }
-  default: return EOPNOTSUPP;
+  default: { static unsigned said; if (said++ < 40) log(6, "wifi-net: unhandled type %d answered zero", type); return answer_value(rq, 0); }
   }
 }
 
@@ -718,7 +718,7 @@ errno_t if_ioctl(ifnet_t ifp, unsigned long cmd, void *data) {
     return 0;
   }
   case SIOCSIFFLAGS: case SIOCSIFMTU: case SIOCADDMULTI: case SIOCDELMULTI: case SIOCSIFADDR: case SIOCSIFMEDIA: return 0;
-  default: { static unsigned said; if (said++ < 16) log(6, "wifi-net: interface request %lx not handled", cmd); return EOPNOTSUPP; }
+case 0xc0206944UL: return 0; default: { static unsigned said; if (said++ < 16) log(6, "wifi-net: interface request %lx not handled", cmd); return EOPNOTSUPP; }
   }
 }
 
