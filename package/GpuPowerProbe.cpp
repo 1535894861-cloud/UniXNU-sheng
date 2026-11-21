@@ -1425,6 +1425,16 @@ int scanProcess(void *proc, void *) {
     return 0;   // PROC_RETURNED: keep iterating
 }
 void metalRows() {
+    {
+        // Start-up state the host can read: the UFS log is not reachable from the running system,
+        // and an unregistered accelerator leaves nothing in the registry to look at.
+        char gpuState[64];
+        snprintf(gpuState, sizeof gpuState, "a%u.%x/%u.%x k%x s%u/%x r%u", native_gpu_addon_stage,
+                 unsigned(native_gpu_addon_status), native_gpu_addon2_stage, unsigned(native_gpu_addon2_status),
+                 unsigned(gMetalKext), gMetalStage, unsigned(gMetalStatus), gMetalRegistered);
+        IOService *gpuPlatform = IOService::getPlatform();
+        if (gpuPlatform) gpuPlatform->setProperty("NativeGpuState", gpuState);
+    }
     if (!gMetalStage && !native_gpu_addon_stage) return;
     char row[64];
     const NativeAdrenoMetalDiagView &d = native_adreno_metal_diag;
