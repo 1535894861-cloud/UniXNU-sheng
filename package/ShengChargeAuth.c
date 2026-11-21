@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: BSD-2-Clause-Patent */
+            /* SPDX-License-Identifier: BSD-2-Clause-Patent */
 #include "ShengChargeAuth.h"
 #include <string.h>
 
@@ -103,11 +103,11 @@ void sheng_charge_auth_reconnect(ShengChargeAuth *a, uint64_t now) {
 }
 void sheng_charge_auth_observe(ShengChargeAuth *a, int online, int usb_type, uint64_t now) {
     const int pd = usb_type == 6 || usb_type == 7 || usb_type == 8;
-    if (!online || (!pd && a->online)) {
+    if (!online) {
         sheng_charge_auth_reconnect(a, now);
         return;
     }
-    if (!a->enabled || !pd) return;
+    if (!a->enabled) return; if (!pd) { if (!a->online) { a->online = 1; a->generation++; diagnostics(a, 0); a->due_ms = now; } return; }
     if (!a->online) {
         a->online = 1; a->generation++; a->state = ChargeGaugeCheck; a->due_ms = now;
     } else if (a->state == ChargeDone || a->state == ChargeFailed) {
