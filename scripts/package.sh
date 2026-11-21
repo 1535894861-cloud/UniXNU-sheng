@@ -14,4 +14,11 @@ print(package['unixnu'])
 PY
 )
 case "$UNIXNU" in /*) ROOT=$UNIXNU ;; *) ROOT=$(cd "$DEVICE/$UNIXNU" && pwd) ;; esac
+# iPadOS 27 sleep/wake fix (sheng). The GOP scanout has no panel power switch, so an
+# display-off request left requested=0 with powered=1: the user client's state wait never
+# completed, the compositor's display-mode transition stayed pending, and every later
+# power-button press re-issued "off" instead of waking the panel. The patch mirrors the
+# requested word into powered and logs each request as [legacy-pm]; it must run before any
+# build, while the pinned UniXNU checkout still holds the pristine display source.
+python3 "$DEVICE/scripts/apply-state-request.py"
 exec python3 "$ROOT/unixnu" release -D "$DEVICE" "$@"
