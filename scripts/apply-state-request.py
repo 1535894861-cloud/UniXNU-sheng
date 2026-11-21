@@ -28,24 +28,31 @@ ANCHOR = '    bool start(IOService *provider) override {\n'
 MARKER = 'int applyStateRequest(OriginalLegacyStateRequest *request, bool wait) override'
 
 METHOD = '''    // iPadOS 27 display on/off (original state request, slot 375). GOP has no panel power
-    // switch, so the request is answered as it is asked: the powered word mirrors the
-    // requested one and every transition completes. Without the mirror an off request
-    // leaves requested=0 with powered=1; the user client's wait (selector 6) then answers
-    // kIOReturnBusy forever, the compositor's display-mode transition stays pending, and a
-    // later power-button press re-issues "off" instead of waking the panel.
+    // switch, so the powered word only ever mirrors "on": an off request is answered with the
+    // panel kept lit, because this board never relights a darkened panel. The registry words
+    // (LegacyPM*) let the host see whether this virtual is reached at all, since kernel IOLog
+    // does not reach the user-space syslog here.
     int applyStateRequest(OriginalLegacyStateRequest *request, bool wait) override {
         int status = IOMobileFramebufferLegacy::applyStateRequest(request, wait);
         if (!request) return status;
         IOLog("[legacy-pm] request skip=%u/%u requested=%u powered=%u changed=%u status=%d\\n",
               request->skipRequested, request->skipPowered, request->requested,
               request->powered, (unsigned)request->changed, status);
+        OSNumber *pmRequested = OSNumber::withNumber((unsigned long long)request->requested, 32);
+        if (pmRequested) {setProperty("LegacyPMRequested",pmRequested);pmRequested->release();}
+        OSNumber *pmPowered = OSNumber::withNumber((unsigned long long)request->powered, 32);
+        if (pmPowered) {setProperty("LegacyPMPowered",pmPowered);pmPowered->release();}
+        OSNumber *pmStatus = OSNumber::withNumber((unsigned long long)(unsigned)status, 32);
+        if (pmStatus) {setProperty("LegacyPMStatus",pmStatus);pmStatus->release();}
         if (!request->skipRequested && !request->skipPowered && request->requested != request->powered) {
             OriginalLegacyStateRequest mirror = *request;
             mirror.skipRequested = 1;
             mirror.skipPowered = 0;
-            mirror.powered = request->requested;
+            mirror.powered = 1;
             mirror.changed = 1;
             status = IOMobileFramebufferLegacy::applyStateRequest(&mirror, wait);
+            OSNumber *pmMirror = OSNumber::withNumber((unsigned long long)1, 32);
+            if (pmMirror) {setProperty("LegacyPMMirror",pmMirror);pmMirror->release();}
             IOLog("[legacy-pm] mirrored powered=%u status=%d\\n", mirror.powered, status);
         }
         return status;
