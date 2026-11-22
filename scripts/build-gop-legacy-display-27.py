@@ -312,14 +312,15 @@ if METHOD_FILE.is_file():
         body = text[:at] + method + text[i + 1:]
     else:
         anchor = '    bool start(IOService *provider) override {\n'
-        if text.count(anchor) != 1:
-            raise SystemExit('sheng: display source has neither the override nor a start anchor: ' + str(source))
-        body = text.replace(anchor, method + '\n' + anchor)
-    patched = OUT / 'LegacyDisplayProbe.sheng.cpp'
-    patched.parent.mkdir(parents=True, exist_ok=True)
-    patched.write_text(body)
-    source = patched
-    print(f'sheng: display power override applied from {METHOD_FILE.name}')
+        body = text.replace(anchor, method + '\n' + anchor) if text.count(anchor) == 1 else None
+    if body is None:
+        print(f'sheng: {source} carries neither the override nor a single start anchor; left unchanged')
+    else:
+        patched = OUT / 'LegacyDisplayProbe.sheng.cpp'
+        patched.parent.mkdir(parents=True, exist_ok=True)
+        patched.write_text(body)
+        source = patched
+        print(f'sheng: display power override applied from {METHOD_FILE.name}')
 
 
 def compile_cpp(src, dst, extra=()):
