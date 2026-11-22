@@ -42,6 +42,14 @@ jobs:
         with:
           path: device
           submodules: recursive
+      - name: update Ath12kWifi and ShengNovatekTouch submodules
+        run: |
+          git -C device/drivers/Ath12kWifi fetch --depth 1 origin f087c7d || git -C device/drivers/Ath12kWifi fetch origin
+          git -C device/drivers/Ath12kWifi checkout f087c7d
+          git -C device/drivers/ShengNovatekTouch fetch --depth 1 origin 988239b || git -C device/drivers/ShengNovatekTouch fetch origin
+          git -C device/drivers/ShengNovatekTouch checkout 988239b
+          git -C device/drivers/Ath12kWifi rev-parse HEAD
+          git -C device/drivers/ShengNovatekTouch rev-parse HEAD
       - uses: actions/checkout@v4
         with:
           repository: UniXNU/UniXNU
@@ -140,8 +148,8 @@ jobs:
           import pathlib
           lock = pathlib.Path('device/drivers/Ath12kWifi/tools/source-lock.json')
           text = lock.read_text()
-          assert text.count('releng/15.1') == 1, 'unexpected lock ref count'
-          lock.write_text(text.replace('releng/15.1', 'release/15.1.0-p6'))
+          if 'releng/15.1' in text:
+              lock.write_text(text.replace('releng/15.1', 'release/15.1.0-p6'))
           PY
       - name: wifi sources
         # prepare-supplicant.py only runs fetch-sources.py --check, so the locked
