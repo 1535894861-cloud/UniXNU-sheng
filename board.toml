@@ -80,6 +80,7 @@ wifi_bin_prefix = "wifi-bin"
 bluetooth_tool = "scripts/build-bluetooth-userspace.py"
 bluetooth_target = "ios27"
 appsync = true
+gpu_addon = true
 
 [payload.runtime.launchd_job_environment."com.apple.iconservices.iconservicesagent"]
 FORCE_SOFTWARE_RENDERER = "0"
