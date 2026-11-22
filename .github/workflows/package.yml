@@ -44,9 +44,9 @@ jobs:
           submodules: recursive
       - name: update Ath12kWifi and ShengNovatekTouch submodules
         run: |
-          git -C device/drivers/Ath12kWifi fetch --depth 1 origin f087c7d || git -C device/drivers/Ath12kWifi fetch origin
+          git -C device/drivers/Ath12kWifi fetch --unshallow origin || git -C device/drivers/Ath12kWifi fetch origin
           git -C device/drivers/Ath12kWifi checkout f087c7d
-          git -C device/drivers/ShengNovatekTouch fetch --depth 1 origin 988239b || git -C device/drivers/ShengNovatekTouch fetch origin
+          git -C device/drivers/ShengNovatekTouch fetch --unshallow origin || git -C device/drivers/ShengNovatekTouch fetch origin
           git -C device/drivers/ShengNovatekTouch checkout 988239b
           git -C device/drivers/Ath12kWifi rev-parse HEAD
           git -C device/drivers/ShengNovatekTouch rev-parse HEAD
