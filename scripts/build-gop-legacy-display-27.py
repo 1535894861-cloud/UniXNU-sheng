@@ -282,6 +282,44 @@ run([llvm / 'llvm-objcopy', '--remove-section=__DATA,__mod_init_func', '--global
 # The board probe and the owned support code, compiled with the kernel's own C++ flags.
 r = json.loads((ROOT / 'build/xnu/ios-obj/DEVELOPMENT_ARM64_BCM2837/iokit/DEVELOPMENT/IOPlatformExpert.cpo.json').read_text().strip().rstrip(','))
 source = ROOT / 'kits/sheng/LegacyDisplayProbe.cpp'
+# sheng: refuse the dark. deps refills kits/ after scripts/apply-state-request.py has run,
+# so the overload is applied here, on the file this build actually compiles.
+METHOD_FILE = Path(__file__).resolve().with_name('sheng-legacy-pm-method.txt')
+if METHOD_FILE.is_file():
+    text = source.read_text()
+    method = METHOD_FILE.read_text().rstrip('\n')
+    marker = 'int applyStateRequest(OriginalLegacyStateRequest *request, bool wait) override'
+    at = text.find(marker)
+    if at >= 0:
+        depth, i, in_string = 0, text.find('{', at), False
+        while i < len(text):
+            ch = text[i]
+            if in_string:
+                if ch == '\\':
+                    i += 2
+                    continue
+                if ch == '"':
+                    in_string = False
+            elif ch == '"':
+                in_string = True
+            elif ch == '{':
+                depth += 1
+            elif ch == '}':
+                depth -= 1
+                if depth == 0:
+                    break
+            i += 1
+        body = text[:at] + method + text[i + 1:]
+    else:
+        anchor = '    bool start(IOService *provider) override {\n'
+        if text.count(anchor) != 1:
+            raise SystemExit('sheng: display source has neither the override nor a start anchor: ' + str(source))
+        body = text.replace(anchor, method + '\n' + anchor)
+    patched = OUT / 'LegacyDisplayProbe.sheng.cpp'
+    patched.parent.mkdir(parents=True, exist_ok=True)
+    patched.write_text(body)
+    source = patched
+    print(f'sheng: display power override applied from {METHOD_FILE.name}')
 
 
 def compile_cpp(src, dst, extra=()):
