@@ -23,6 +23,54 @@ if ARCH != 'arm64e' or IOS_VERSION.split('.')[0] != '27' or (BUILD, MACOS) not i
 ROOT = Path(__file__).resolve().parents[1]
 OUT = ROOT / 'build/native-legacy-display'
 OUT.mkdir(parents=True, exist_ok=True)
+# sheng: the display state request. build-arm-driver.py reads
+# drivers/GopFramebuffer/NativeLegacyDisplay.cpp from this tree and the page probes sit under
+# kits/sheng; deps may refill either copy after scripts/apply-state-request.py ran, so the
+# overload is installed here, in place, before the compiler reads it.
+METHOD_FILE = Path(__file__).resolve().with_name('sheng-legacy-pm-method.txt')
+DISPLAY_MARKER = 'int applyStateRequest(OriginalLegacyStateRequest *request, bool wait) override'
+DISPLAY_START = '    bool start(IOService *provider) override {\n'
+
+
+def sheng_patch_display(target):
+    """Replace (or insert) the display state request override in place; idempotent."""
+    if not target.is_file():
+        print(f'sheng: {target} is absent; left untouched')
+        return False
+    method = METHOD_FILE.read_text().rstrip('\n')
+    text = target.read_text()
+    at = text.find(DISPLAY_MARKER)
+    if at >= 0:
+        depth, i, in_string = 0, text.find('{', at), False
+        while i < len(text):
+            ch = text[i]
+            if in_string:
+                if ch == '\\':
+                    i += 2
+                    continue
+                if ch == '"':
+                    in_string = False
+            elif ch == '"':
+                in_string = True
+            elif ch == '{':
+                depth += 1
+            elif ch == '}':
+                depth -= 1
+                if depth == 0:
+                    break
+            i += 1
+        body, how = text[:at] + method + text[i + 1:], 'replaced'
+    elif text.count(DISPLAY_START) == 1:
+        body, how = text.replace(DISPLAY_START, method + '\n' + DISPLAY_START), 'inserted'
+    else:
+        print(f'sheng: {target.name}: no override, start anchor count {text.count(DISPLAY_START)}; left untouched')
+        return False
+    target.write_text(body)
+    print(f'sheng: {how} applyStateRequest in {target.name} ({len(body)} bytes)')
+    return True
+
+
+sheng_patch_display(ROOT / 'drivers/GopFramebuffer/NativeLegacyDisplay.cpp')
 sys.path.insert(0, str(ROOT / 'kits/XnuPrelink'))
 ABI_PATH = Path(__file__).resolve().with_name(f'legacy-display-{BUILD}.json')
 abi = json.loads(ABI_PATH.read_text())
@@ -282,45 +330,7 @@ run([llvm / 'llvm-objcopy', '--remove-section=__DATA,__mod_init_func', '--global
 # The board probe and the owned support code, compiled with the kernel's own C++ flags.
 r = json.loads((ROOT / 'build/xnu/ios-obj/DEVELOPMENT_ARM64_BCM2837/iokit/DEVELOPMENT/IOPlatformExpert.cpo.json').read_text().strip().rstrip(','))
 source = ROOT / 'kits/sheng/LegacyDisplayProbe.cpp'
-# sheng: refuse the dark. deps refills kits/ after scripts/apply-state-request.py has run,
-# so the overload is applied here, on the file this build actually compiles.
-METHOD_FILE = Path(__file__).resolve().with_name('sheng-legacy-pm-method.txt')
-if METHOD_FILE.is_file():
-    text = source.read_text()
-    method = METHOD_FILE.read_text().rstrip('\n')
-    marker = 'int applyStateRequest(OriginalLegacyStateRequest *request, bool wait) override'
-    at = text.find(marker)
-    if at >= 0:
-        depth, i, in_string = 0, text.find('{', at), False
-        while i < len(text):
-            ch = text[i]
-            if in_string:
-                if ch == '\\':
-                    i += 2
-                    continue
-                if ch == '"':
-                    in_string = False
-            elif ch == '"':
-                in_string = True
-            elif ch == '{':
-                depth += 1
-            elif ch == '}':
-                depth -= 1
-                if depth == 0:
-                    break
-            i += 1
-        body = text[:at] + method + text[i + 1:]
-    else:
-        anchor = '    bool start(IOService *provider) override {\n'
-        body = text.replace(anchor, method + '\n' + anchor) if text.count(anchor) == 1 else None
-    if body is None:
-        print(f'sheng: {source} carries neither the override nor a single start anchor; left unchanged')
-    else:
-        patched = OUT / 'LegacyDisplayProbe.sheng.cpp'
-        patched.parent.mkdir(parents=True, exist_ok=True)
-        patched.write_text(body)
-        source = patched
-        print(f'sheng: display power override applied from {METHOD_FILE.name}')
+sheng_patch_display(source)
 
 
 def compile_cpp(src, dst, extra=()):
