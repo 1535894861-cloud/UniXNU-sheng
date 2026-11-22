@@ -60,19 +60,66 @@ METHOD = '''    // iPadOS 27 display on/off (original state request, slot 375). 
 '''
 
 
+def method_span(text):
+    """Return (start, end) of the existing applyStateRequest override, matched by braces."""
+    at = text.find(MARKER)
+    if at < 0:
+        return None
+    brace = text.find('{', at)
+    if brace < 0:
+        return None
+    depth, i, in_string = 0, brace, False
+    while i < len(text):
+        ch = text[i]
+        if in_string:
+            if ch == '\\':
+                i += 2
+                continue
+            if ch == '"':
+                in_string = False
+        elif ch == '"':
+            in_string = True
+        elif text.startswith('//', i):
+            end = text.find('\n', i)
+            i = len(text) if end < 0 else end
+            continue
+        elif text.startswith('/*', i):
+            end = text.find('*/', i)
+            i = len(text) if end < 0 else end + 2
+            continue
+        elif ch == '{':
+            depth += 1
+        elif ch == '}':
+            depth -= 1
+            if depth == 0:
+                return at, i + 1
+        i += 1
+    return None
+
+
 def main():
     found = [p for p in CANDIDATES if p.is_file()]
     if not found:
         sys.exit('no display source found; tried: ' + ', '.join(str(p) for p in CANDIDATES))
     for source in found:
         text = source.read_text()
-        if MARKER in text:
-            print(f'already patched: {source}')
-            continue
-        if text.count(ANCHOR) != 1:
-            sys.exit(f'anchor count {text.count(ANCHOR)} in {source}')
-        source.write_text(text.replace(ANCHOR, METHOD + ANCHOR))
-        print(f'patched {source} (+{METHOD.count(chr(10))} lines)')
+        span = method_span(text)
+        if span:
+            # The pinned checkout already carries an earlier mirror of this virtual, so an
+            # insert-only patch never lands. Replace the whole override instead.
+            start, end = span
+            source.write_text(text[:start] + METHOD.strip('\n') + text[end:])
+            print(f'replaced the existing applyStateRequest in {source}')
+        else:
+            if text.count(ANCHOR) != 1:
+                sys.exit(f'anchor count {text.count(ANCHOR)} in {source}')
+            source.write_text(text.replace(ANCHOR, METHOD + ANCHOR))
+            print(f'inserted applyStateRequest in {source} (+{METHOD.count(chr(10))} lines)')
+        after = source.read_text()
+        print(f'{source}: bytes={len(after)} LegacyPMRequested={after.count("LegacyPMRequested")} '
+              f'LegacyPMMirror={after.count("LegacyPMMirror")}')
+        if not after.count('LegacyPMRequested'):
+            sys.exit('the display patch did not land: LegacyPMRequested missing after the write')
     return 0
 
 
