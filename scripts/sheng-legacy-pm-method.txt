@@ -1,0 +1,25 @@
+    // iPadOS 27 display on/off (original state request, slot 375). The GOP scanout has no
+    // panel power switch, so the powered word only ever answers "on": an off request leaves
+    // the panel lit, because this board never relights a darkened panel. The LegacyPM* words
+    // let the host see from the registry whether this virtual is reached at all.
+    int applyStateRequest(OriginalLegacyStateRequest *request, bool wait) override {
+        int status = IOMobileFramebufferLegacy::applyStateRequest(request, wait);
+        if (!request) return status;
+        IOLog("[legacy-pm] request skip=%u/%u requested=%u powered=%u changed=%u status=%d\n",
+              request->skipRequested, request->skipPowered, request->requested,
+              request->powered, (unsigned)request->changed, status);
+        setProperty("LegacyPMRequested", request->requested ? "1" : "0");
+        setProperty("LegacyPMPowered", request->powered ? "1" : "0");
+        setProperty("LegacyPMStatus", status ? "err" : "ok");
+        if (!request->skipRequested && !request->skipPowered && request->requested != request->powered) {
+            OriginalLegacyStateRequest mirror = *request;
+            mirror.skipRequested = 1;
+            mirror.skipPowered = 0;
+            mirror.powered = 1;
+            mirror.changed = 1;
+            status = IOMobileFramebufferLegacy::applyStateRequest(&mirror, wait);
+            setProperty("LegacyPMMirror", "keep-lit");
+            IOLog("[legacy-pm] mirrored powered=%u status=%d\n", mirror.powered, status);
+        }
+        return status;
+    }
