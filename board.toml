@@ -107,6 +107,11 @@ CI_ENABLE_METAL_GPU = "0"
 ["bootimg"."image"]
 ramdisk_compression = "uefi-chunks"
 ramdisk_max_bytes = 199229440
+header_version = 4
+kernel_offset = 0
+ramdisk_offset = 0x01000000
+tags_offset = 0x01e00000
+max_image_bytes = 104857600
 
 
 ["device_tree"]
