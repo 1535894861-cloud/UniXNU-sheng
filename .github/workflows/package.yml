@@ -176,6 +176,7 @@ jobs:
         continue-on-error: true
         run: |
           python3 -c 'open("device/package/BootLog.c","a").write("\n#pragma clang diagnostic push\n#pragma clang diagnostic ignored \"-Wmissing-prototypes\"\nuint64_t cs_native4k_chunk_ticks=0,cs_native4k_digest_bytes[2]={0},cs_native4k_digest_cpu[2]={0},cs_native4k_digest_wall[2]={0},cs_native4k_record_ticks=0;\nint iokit_physical_descriptor_close_notify(void){return 0;}\nint ml_static_mfree_prepare(void){return 0;}\nint native_legacy_request_layout(void){return 0;}\nint sheng_ethernet_probe(void){return 0;}\nint sheng_software_aes_probe(void){return 0;}\n#pragma clang diagnostic pop\n")'
+          python3 -c 'open("device/package/BootLog.c","a").write("\n#pragma clang diagnostic push\n#pragma clang diagnostic ignored \"-Wmissing-prototypes\"\nvolatile uint32_t native_aes_registered=0,native_aes_fairplay_key_uses=0,native_aes_nonce_key_uses=0,native_aes_unsupported_key=0,native_aes_last_unsupported_selector=0,native_vmm_hide_hits=0;\n#pragma clang diagnostic pop\n")'
       - name: Shrink native kernel size for ios27
         continue-on-error: true
         run: |
